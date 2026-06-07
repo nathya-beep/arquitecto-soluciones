@@ -22,16 +22,10 @@ export default function Home() {
 
         <div className="flex flex-col sm:flex-row gap-4 justify-center mb-16">
           <Link
-            href="/auth/login"
+            href="/dashboard"
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-4 rounded-2xl font-semibold text-lg transition-colors"
           >
-            Empezar gratis
-          </Link>
-          <Link
-            href="/dashboard"
-            className="border border-white/20 hover:bg-white/10 text-white px-8 py-4 rounded-2xl font-semibold text-lg transition-colors"
-          >
-            Mis proyectos
+            Empezar ahora
           </Link>
         </div>
 
