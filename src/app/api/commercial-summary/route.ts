@@ -21,7 +21,7 @@ Devuelve SOLO un objeto JSON válido con exactamente estos campos (sin markdown,
 }`;
 
 export async function POST(request: NextRequest) {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = (process.env.GROQ_API_KEY ?? "").replace(/﻿/g, "").trim();
   if (!apiKey) return NextResponse.json({ error: "Sin API key" }, { status: 503 });
 
   let body: unknown;

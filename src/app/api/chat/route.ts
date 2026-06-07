@@ -12,7 +12,7 @@ const RequestSchema = z.object({
 });
 
 export async function POST(request: NextRequest) {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = (process.env.GROQ_API_KEY ?? "").replace(/﻿/g, "").trim();
   if (!apiKey) {
     return NextResponse.json(
       { error: "Falta configurar GROQ_API_KEY en Vercel" },
@@ -62,8 +62,7 @@ export async function POST(request: NextRequest) {
     const content = data?.choices?.[0]?.message?.content ?? "Lo siento, no pude generar una respuesta.";
     return NextResponse.json({ content });
   } catch (err) {
-    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-    console.error("Groq fetch error:", msg);
-    return NextResponse.json({ error: `Debug: ${msg}` }, { status: 502 });
+    console.error("Groq fetch error:", err);
+    return NextResponse.json({ error: "Error de conexión con la IA." }, { status: 502 });
   }
 }
