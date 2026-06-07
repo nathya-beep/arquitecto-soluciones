@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { CommercialSummary } from "@/lib/types";
 
+export const runtime = "edge";
+
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
   title: z.string(),
@@ -21,7 +23,7 @@ Devuelve SOLO un objeto JSON válido con exactamente estos campos (sin markdown,
 }`;
 
 export async function POST(request: NextRequest) {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "Sin API key" }, { status: 503 });
 
   let body: unknown;
@@ -32,38 +34,36 @@ export async function POST(request: NextRequest) {
   const parsed = RequestSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
 
-  const geminiBody = {
-    systemInstruction: {
-      parts: [{ text: COMMERCIAL_SYSTEM }],
-    },
-    contents: [{
-      role: "user",
-      parts: [{ text: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}` }],
-    }],
-    generationConfig: {
-      maxOutputTokens: 1024,
-      temperature: 0.5,
-    },
-  };
+  const isOAuth = apiKey.startsWith("sk-ant-oat");
+  const authHeader = isOAuth
+    ? { "Authorization": `Bearer ${apiKey}` }
+    : { "x-api-key": apiKey };
 
   try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(geminiBody),
-      }
-    );
+    const response = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        ...authHeader,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 1024,
+        system: COMMERCIAL_SYSTEM,
+        messages: [{
+          role: "user",
+          content: `Especificación del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
+        }],
+      }),
+    });
 
     if (!response.ok) {
-      const errText = await response.text();
-      console.error("Gemini commercial error:", response.status, errText);
       return NextResponse.json({ error: "Error generando resumen" }, { status: 502 });
     }
 
     const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "{}";
+    const text = data.content?.[0]?.text ?? "{}";
 
     let summary: CommercialSummary;
     try {
@@ -73,25 +73,16 @@ export async function POST(request: NextRequest) {
       summary = {
         headline: "Automatización que transforma tu negocio",
         problem: "Tu equipo dedica horas a tareas repetitivas que una herramienta inteligente puede resolver.",
-        benefits: [
-          "Ahorra horas de trabajo manual cada semana",
-          "Elimina errores humanos en procesos críticos",
-          "Escala operaciones sin aumentar el equipo",
-          "Datos en tiempo real para decisiones más rápidas",
-        ],
-        howItWorks: [
-          "El sistema captura y procesa tu información automáticamente",
-          "Aplica las reglas de negocio definidas para tu caso específico",
-          "Entrega resultados listos para usar en segundos",
-        ],
-        roiEstimate: "Recupera la inversión en el primer mes con el tiempo ahorrado en procesos manuales",
-        callToAction: "Implementa esta automatización hoy y libera a tu equipo para lo que realmente importa",
+        benefits: ["Ahorra horas de trabajo manual", "Elimina errores humanos", "Escala sin aumentar equipo", "Datos en tiempo real"],
+        howItWorks: ["Captura información automáticamente", "Aplica reglas de negocio", "Entrega resultados en segundos"],
+        roiEstimate: "Recupera la inversión en el primer mes",
+        callToAction: "Implementa hoy y libera a tu equipo para lo que importa",
       };
     }
 
     return NextResponse.json({ summary });
   } catch (err) {
-    console.error("Gemini commercial fetch error:", err);
+    console.error("Edge commercial error:", err);
     return NextResponse.json({ error: "Error generando resumen" }, { status: 502 });
   }
 }
