@@ -34,19 +34,20 @@ export async function POST(request: NextRequest) {
   const parsed = RequestSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
 
-  const isOAuth = apiKey.startsWith("sk-ant-oat");
-  const authHeader = isOAuth
-    ? { "Authorization": `Bearer ${apiKey}` }
-    : { "x-api-key": apiKey };
+  const headers: Record<string, string> = {
+    "anthropic-version": "2023-06-01",
+    "content-type": "application/json",
+  };
+  if (apiKey.startsWith("sk-ant-oat")) {
+    headers["Authorization"] = `Bearer ${apiKey}`;
+  } else {
+    headers["x-api-key"] = apiKey;
+  }
 
   try {
     const response = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
-      headers: {
-        ...authHeader,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
+      headers,
       body: JSON.stringify({
         model: "claude-haiku-4-5-20251001",
         max_tokens: 1024,
