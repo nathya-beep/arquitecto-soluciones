@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import Anthropic from "@anthropic-ai/sdk";
 import { CommercialSummary } from "@/lib/types";
 
 const RequestSchema = z.object({
@@ -20,6 +21,13 @@ Devuelve SOLO un objeto JSON válido con exactamente estos campos (sin markdown,
   "callToAction": "Frase de cierre motivadora y urgente para implementar la solución"
 }`;
 
+function makeClient(apiKey: string): Anthropic {
+  if (apiKey.startsWith("sk-ant-oat")) {
+    return new Anthropic({ authToken: apiKey });
+  }
+  return new Anthropic({ apiKey });
+}
+
 export async function POST(request: NextRequest) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return NextResponse.json({ error: "Sin API key" }, { status: 503 });
@@ -33,26 +41,18 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
 
   try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 1024,
-        system: COMMERCIAL_SYSTEM,
-        messages: [{
-          role: "user",
-          content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
-        }],
-      }),
+    const client = makeClient(apiKey);
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1024,
+      system: COMMERCIAL_SYSTEM,
+      messages: [{
+        role: "user",
+        content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
+      }],
     });
 
-    const data = await response.json();
-    const text = data.content?.[0]?.text ?? "{}";
+    const text = response.content[0]?.type === "text" ? response.content[0].text : "{}";
 
     let summary: CommercialSummary;
     try {
@@ -79,7 +79,8 @@ export async function POST(request: NextRequest) {
     }
 
     return NextResponse.json({ summary });
-  } catch {
+  } catch (err) {
+    console.error("Commercial summary error:", err);
     return NextResponse.json({ error: "Error generando resumen" }, { status: 502 });
   }
 }
