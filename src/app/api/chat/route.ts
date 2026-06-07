@@ -62,7 +62,8 @@ export async function POST(request: NextRequest) {
     const content = data?.choices?.[0]?.message?.content ?? "Lo siento, no pude generar una respuesta.";
     return NextResponse.json({ content });
   } catch (err) {
-    console.error("Groq fetch error:", err);
-    return NextResponse.json({ error: "Error de conexión con la IA." }, { status: 502 });
+    const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    console.error("Groq fetch error:", msg);
+    return NextResponse.json({ error: `Debug: ${msg}` }, { status: 502 });
   }
 }
