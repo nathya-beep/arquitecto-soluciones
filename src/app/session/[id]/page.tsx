@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import { Message, Session, Phase } from "@/lib/types";
+import { Message, Session, Phase, CommercialSummary as CommercialSummaryType } from "@/lib/types";
 import { getSession, saveSession } from "@/lib/storage";
 import ChatMessage from "@/components/ChatMessage";
 import PhaseIndicator from "@/components/PhaseIndicator";
-import DownloadButton from "@/components/DownloadButton";
+import CommercialSummary from "@/components/CommercialSummary";
 import Link from "next/link";
 
 interface SessionPageProps {
@@ -20,15 +20,11 @@ function detectPhase(content: string, currentPhase: Phase): Phase {
     (lower.includes("problema principal") ||
       lower.includes("usuarios y roles") ||
       lower.includes("esto captura bien"))
-  ) {
-    return "structuring";
-  }
+  ) return "structuring";
   if (
     (currentPhase === "structuring" || currentPhase === "generation") &&
     lower.includes("# contexto del proyecto")
-  ) {
-    return "done";
-  }
+  ) return "done";
   return currentPhase;
 }
 
@@ -43,15 +39,12 @@ export default function SessionPage({ params }: SessionPageProps) {
   const [sending, setSending] = useState(false);
   const [error, setError] = useState("");
   const [initialized, setInitialized] = useState(false);
+  const [generatingCommercial, setGeneratingCommercial] = useState(false);
 
   useEffect(() => {
     const s = getSession(id);
-    if (!s) {
-      router.push("/dashboard");
-      return;
-    }
+    if (!s) { router.push("/dashboard"); return; }
     setSession(s);
-
     if (s.messages.length === 0) {
       sendGreeting(s);
     } else {
@@ -62,6 +55,18 @@ export default function SessionPage({ params }: SessionPageProps) {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [session?.messages]);
+
+  // When phase becomes "done" and no commercial summary yet, generate it + send email
+  useEffect(() => {
+    if (
+      session?.phase === "done" &&
+      session.finalPrompt &&
+      !session.commercialSummary &&
+      !generatingCommercial
+    ) {
+      generateCommercialAndSendEmail(session);
+    }
+  }, [session?.phase, session?.finalPrompt]);
 
   const updateSession = (updated: Session) => {
     saveSession(updated);
@@ -76,125 +81,96 @@ export default function SessionPage({ params }: SessionPageProps) {
       content: "Hola, estoy listo para comenzar.",
       createdAt: new Date().toISOString(),
     };
-
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: greetingMsg.content }] }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? "Error al contactar la IA"); setInitialized(true); return; }
+      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: data.content, createdAt: new Date().toISOString() };
+      updateSession({ ...s, messages: [greetingMsg, assistantMsg], updatedAt: new Date().toISOString() });
+    } catch { setError("Error de conexión."); }
+    finally { setSending(false); setInitialized(true); }
+  };
+
+  const generateCommercialAndSendEmail = async (s: Session) => {
+    setGeneratingCommercial(true);
+    try {
+      // Generate commercial summary
+      const summaryRes = await fetch("/api/commercial-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title }),
+      });
+      const summaryData = await summaryRes.json();
+      const commercial: CommercialSummaryType = summaryData.summary;
+
+      const withSummary: Session = { ...s, commercialSummary: commercial, updatedAt: new Date().toISOString() };
+      updateSession(withSummary);
+
+      // Send email
+      const emailRes = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: [{ role: "user", content: greetingMsg.content }],
+          projectTitle: s.title,
+          commercialSummary: commercial,
+          finalPrompt: s.finalPrompt,
         }),
       });
+      const emailData = await emailRes.json();
+      const sent = emailRes.ok && !emailData.error;
 
-      const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Error al contactar la IA");
-        setInitialized(true);
-        return;
-      }
-
-      const assistantMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: data.content,
-        createdAt: new Date().toISOString(),
-      };
-
-      const updated: Session = {
-        ...s,
-        messages: [greetingMsg, assistantMsg],
-        updatedAt: new Date().toISOString(),
-      };
-      updateSession(updated);
-    } catch {
-      setError("Error de conexión. Verifica que el servidor esté corriendo.");
-    } finally {
-      setSending(false);
-      setInitialized(true);
-    }
+      updateSession({ ...withSummary, emailSent: sent, updatedAt: new Date().toISOString() });
+    } catch { /* keep going */ }
+    finally { setGeneratingCommercial(false); }
   };
 
   const sendMessage = async () => {
     if (!inputValue.trim() || sending || !session || session.phase === "done") return;
-
     const userContent = inputValue.trim();
     setInputValue("");
     setError("");
 
-    const userMsg: Message = {
-      id: crypto.randomUUID(),
-      role: "user",
-      content: userContent,
-      createdAt: new Date().toISOString(),
-    };
-
-    const optimistic: Session = {
-      ...session,
-      messages: [...session.messages, userMsg],
-      updatedAt: new Date().toISOString(),
-    };
+    const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: userContent, createdAt: new Date().toISOString() };
+    const optimistic: Session = { ...session, messages: [...session.messages, userMsg], updatedAt: new Date().toISOString() };
     updateSession(optimistic);
     setSending(true);
 
     try {
-      const apiMessages = [...optimistic.messages].map((m) => ({
-        role: m.role,
-        content: m.content,
-      }));
-
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: apiMessages }),
+        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })) }),
       });
-
       const data = await res.json();
-      if (!res.ok) {
-        setError(data.error ?? "Error al enviar mensaje");
-        setInputValue(userContent);
-        updateSession(session);
-        return;
-      }
+      if (!res.ok) { setError(data.error ?? "Error"); setInputValue(userContent); updateSession(session); return; }
 
-      const assistantMsg: Message = {
-        id: crypto.randomUUID(),
-        role: "assistant",
-        content: data.content,
-        createdAt: new Date().toISOString(),
-      };
-
+      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: data.content, createdAt: new Date().toISOString() };
       const newPhase = detectPhase(data.content, optimistic.phase);
       const isFinalPrompt = newPhase === "done";
 
-      // Deriva el título del primer mensaje real del usuario
       let title = optimistic.title;
       if (title === "Nueva sesión" && session.messages.length <= 2) {
         title = userContent.split(" ").slice(0, 7).join(" ");
       }
 
-      const final: Session = {
+      updateSession({
         ...optimistic,
         title,
         phase: newPhase,
         messages: [...optimistic.messages, assistantMsg],
         finalPrompt: isFinalPrompt ? data.content : optimistic.finalPrompt,
         updatedAt: new Date().toISOString(),
-      };
-      updateSession(final);
-    } catch {
-      setError("Error de conexión. Intenta de nuevo.");
-      setInputValue(userContent);
-      updateSession(session);
-    } finally {
-      setSending(false);
-    }
+      });
+    } catch { setError("Error de conexión. Intenta de nuevo."); setInputValue(userContent); updateSession(session); }
+    finally { setSending(false); }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
   };
 
   const handleTextareaChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -214,6 +190,10 @@ export default function SessionPage({ params }: SessionPageProps) {
     );
   }
 
+  const visibleMessages = session.messages.filter(
+    m => !(m.role === "user" && m.content === "Hola, estoy listo para comenzar.")
+  );
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       {/* Header */}
@@ -225,27 +205,18 @@ export default function SessionPage({ params }: SessionPageProps) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
             </Link>
-            <h1 className="font-medium text-slate-800 truncate text-sm sm:text-base">
-              {session.title}
-            </h1>
+            <h1 className="font-medium text-slate-800 truncate text-sm sm:text-base">{session.title}</h1>
           </div>
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <PhaseIndicator currentPhase={session.phase} />
-            {session.phase === "done" && session.finalPrompt && (
-              <DownloadButton content={session.finalPrompt} sessionTitle={session.title} />
-            )}
-          </div>
+          <PhaseIndicator currentPhase={session.phase} />
         </div>
       </header>
 
       {/* Chat */}
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-3xl mx-auto px-4 py-6">
-          {session.messages
-            .filter((m) => !(m.role === "user" && m.content === "Hola, estoy listo para comenzar."))
-            .map((message) => (
-              <ChatMessage key={message.id} message={message} />
-            ))}
+          {visibleMessages.map(message => (
+            <ChatMessage key={message.id} message={message} />
+          ))}
 
           {sending && (
             <div className="flex justify-start mb-4">
@@ -264,31 +235,33 @@ export default function SessionPage({ params }: SessionPageProps) {
             </div>
           )}
 
-          {session.phase === "done" && session.finalPrompt && (
-            <div className="bg-green-50 border border-green-200 rounded-xl p-5 mt-4 text-center">
-              <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-2">
-                <svg className="w-5 h-5 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                </svg>
-              </div>
-              <h3 className="font-semibold text-green-800 mb-1">Prompt Master generado</h3>
-              <p className="text-green-600 text-sm mb-3">Tu especificación técnica está lista para descargarse.</p>
-              <DownloadButton content={session.finalPrompt} sessionTitle={session.title} />
-            </div>
+          {/* Commercial Summary — aparece cuando la entrevista termina */}
+          {session.phase === "done" && (
+            <CommercialSummary
+              summary={session.commercialSummary ?? {
+                headline: "Generando tu propuesta comercial...",
+                problem: "",
+                benefits: [],
+                howItWorks: [],
+                roiEstimate: "",
+                callToAction: "",
+              }}
+              projectTitle={session.title}
+              emailSent={session.emailSent}
+              loading={generatingCommercial || !session.commercialSummary}
+            />
           )}
 
           <div ref={messagesEndRef} />
         </div>
       </div>
 
-      {/* Input */}
+      {/* Input — oculto cuando está completo */}
       {session.phase !== "done" && (
         <div className="bg-white border-t border-slate-200 px-4 py-4 flex-shrink-0">
           <div className="max-w-3xl mx-auto">
             {error && (
-              <div className="text-red-600 text-sm bg-red-50 border border-red-200 px-3 py-2 rounded-lg mb-3">
-                {error}
-              </div>
+              <div className="text-red-600 text-sm bg-red-50 border border-red-200 px-3 py-2 rounded-lg mb-3">{error}</div>
             )}
             <div className="flex gap-3 items-end">
               <textarea

@@ -30,6 +30,8 @@ export function createSession(): Session {
     phase: "exploration",
     messages: [],
     finalPrompt: null,
+    commercialSummary: null,
+    emailSent: false,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

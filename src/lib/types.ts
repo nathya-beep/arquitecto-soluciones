@@ -7,12 +7,23 @@ export interface Message {
   createdAt: string;
 }
 
+export interface CommercialSummary {
+  headline: string;
+  problem: string;
+  benefits: string[];
+  howItWorks: string[];
+  roiEstimate: string;
+  callToAction: string;
+}
+
 export interface Session {
   id: string;
   title: string;
   phase: Phase;
   messages: Message[];
   finalPrompt: string | null;
+  commercialSummary: CommercialSummary | null;
+  emailSent: boolean;
   createdAt: string;
   updatedAt: string;
 }
