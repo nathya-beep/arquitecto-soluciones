@@ -16,10 +16,18 @@ export interface CommercialSummary {
   callToAction: string;
 }
 
+export interface Contact {
+  name: string;
+  email: string;
+  whatsapp: string;
+  company: string;
+}
+
 export interface Session {
   id: string;
   title: string;
   phase: Phase;
+  contact: Contact | null;
   messages: Message[];
   finalPrompt: string | null;
   commercialSummary: CommercialSummary | null;
@@ -70,10 +78,12 @@ Luego explora con preguntas de seguimiento naturales:
 ## FASE 2: ESTRUCTURACIÓN
 Tras 8–15 intercambios, presenta un resumen con estas secciones:
 PROBLEMA PRINCIPAL · USUARIOS Y ROLES · INFORMACIÓN · REGLAS DE NEGOCIO · FLUJOS DE TRABAJO · CASOS ESPECIALES · CRITERIOS DE ÉXITO · PREGUNTAS PENDIENTES.
-Pregunta: "¿Esto captura bien lo que necesitas? ¿Hay algo incorrecto o que falte?" Itera hasta confirmación.
+La PRIMERA línea de ese mensaje de resumen debe ser exactamente: [[RESUMEN]]
+Luego pregunta: "¿Esto captura bien lo que necesitas? ¿Hay algo incorrecto o que falte?" Itera hasta confirmación.
 
 ## FASE 3: GENERACIÓN DEL PROMPT MASTER
-Solo después de confirmar Fase 2. Genera un prompt técnico en Markdown con:
+Solo después de confirmar Fase 2. La PRIMERA línea del mensaje debe ser exactamente: [[PROMPT_MASTER]]
+Luego genera un prompt técnico en Markdown con:
 - Contexto del Proyecto
 - Stack Técnico: Next.js 14+, TypeScript, Supabase, Tailwind
 - Descripción Funcional (módulos)
@@ -85,9 +95,25 @@ Solo después de confirmar Fase 2. Genera un prompt técnico en Markdown con:
 - Criterios de Aceptación (checklist)
 - Instrucciones de Implementación y Notas Técnicas
 
+# MARCADORES INTERNOS
+Las etiquetas [[RESUMEN]] y [[PROMPT_MASTER]] son señales para la aplicación, no texto para el usuario.
+Úsalas SIEMPRE y SOLO en la primera línea del mensaje correspondiente. Nunca las menciones ni las repitas en otro lugar.
+
 # REGLAS
 - No generes el Prompt Master hasta completar Fases 1 y 2.
 - Si el usuario quiere saltar a la solución, reencuadra amablemente.
 - Si el problema se resuelve sin software nuevo, menciónalo.
 - Si el alcance es muy grande, sugiere dividir en fases con un MVP.
 - Pregunta siempre por herramientas existentes con las que deba integrarse.`;
+
+/** Marcadores internos que el modelo emite y la app procesa (no se muestran al usuario). */
+export const SUMMARY_MARKER = "[[RESUMEN]]";
+export const PROMPT_MASTER_MARKER = "[[PROMPT_MASTER]]";
+
+/** Quita los marcadores internos del texto antes de mostrarlo o guardarlo como entregable. */
+export function stripMarkers(content: string): string {
+  return content
+    .replaceAll(SUMMARY_MARKER, "")
+    .replaceAll(PROMPT_MASTER_MARKER, "")
+    .trim();
+}

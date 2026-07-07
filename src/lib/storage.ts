@@ -28,6 +28,7 @@ export function createSession(): Session {
     id: crypto.randomUUID(),
     title: "Nueva sesión",
     phase: "exploration",
+    contact: null,
     messages: [],
     finalPrompt: null,
     commercialSummary: null,

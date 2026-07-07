@@ -3,6 +3,15 @@ import { z } from "zod";
 
 const RequestSchema = z.object({
   projectTitle: z.string(),
+  contact: z
+    .object({
+      name: z.string(),
+      email: z.string(),
+      whatsapp: z.string(),
+      company: z.string(),
+    })
+    .nullable()
+    .optional(),
   commercialSummary: z.object({
     headline: z.string(),
     problem: z.string(),
@@ -25,7 +34,19 @@ export async function POST(request: NextRequest) {
   const parsed = RequestSchema.safeParse(body);
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
 
-  const { projectTitle, commercialSummary: cs, finalPrompt } = parsed.data;
+  const { projectTitle, contact, commercialSummary: cs, finalPrompt } = parsed.data;
+
+  const contactBlock = contact
+    ? `DATOS DEL PROSPECTO (LEAD)
+--------------------------
+Nombre:   ${contact.name || "—"}
+Email:    ${contact.email || "—"}
+WhatsApp: ${contact.whatsapp || "—"}
+Empresa:  ${contact.company || "—"}
+
+---
+`
+    : "";
 
   const emailBody = `
 PROPUESTA DE AUTOMATIZACIÓN
@@ -36,7 +57,7 @@ PROYECTO: ${projectTitle}
 
 ---
 
-EL PROBLEMA
+${contactBlock}EL PROBLEMA
 -----------
 ${cs.problem}
 
@@ -74,10 +95,16 @@ ${finalPrompt}
 
   try {
     const formData = new FormData();
-    formData.append("name", "Arquitecto de Soluciones");
-    formData.append("email", "arquitecto@soluciones.app");
-    formData.append("_subject", `Propuesta de Automatización: ${projectTitle}`);
+    formData.append("name", contact?.name || "Arquitecto de Soluciones");
+    // Si el prospecto dejó email, lo usamos como remitente para poder responderle directo.
+    formData.append("email", contact?.email || "arquitecto@soluciones.app");
+    const subjectWho = contact?.name ? ` — ${contact.name}` : "";
+    formData.append("_subject", `Nuevo lead${subjectWho}: ${projectTitle}`);
     formData.append("_template", "table");
+    formData.append("Prospecto", contact?.name || "—");
+    formData.append("Email", contact?.email || "—");
+    formData.append("WhatsApp", contact?.whatsapp || "—");
+    formData.append("Empresa", contact?.company || "—");
     formData.append("Proyecto", projectTitle);
     formData.append("Propuesta Comercial y Prompt Master", emailBody);
 

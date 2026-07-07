@@ -2,11 +2,22 @@
 
 import { useEffect, useRef, useState, use } from "react";
 import { useRouter } from "next/navigation";
-import { Message, Session, Phase, CommercialSummary as CommercialSummaryType } from "@/lib/types";
+import {
+  Message,
+  Session,
+  Phase,
+  Contact,
+  CommercialSummary as CommercialSummaryType,
+  SUMMARY_MARKER,
+  PROMPT_MASTER_MARKER,
+  stripMarkers,
+} from "@/lib/types";
 import { getSession, saveSession } from "@/lib/storage";
 import ChatMessage from "@/components/ChatMessage";
 import PhaseIndicator from "@/components/PhaseIndicator";
 import CommercialSummary from "@/components/CommercialSummary";
+import PromptMasterCard from "@/components/PromptMasterCard";
+import ContactForm from "@/components/ContactForm";
 import Link from "next/link";
 
 interface SessionPageProps {
@@ -15,16 +26,23 @@ interface SessionPageProps {
 
 function detectPhase(content: string, currentPhase: Phase): Phase {
   const lower = content.toLowerCase();
+
+  // Señal primaria: marcadores internos que el modelo emite.
+  if (content.includes(PROMPT_MASTER_MARKER)) return "done";
+  if (currentPhase === "exploration" && content.includes(SUMMARY_MARKER)) return "structuring";
+
+  // Fallback heurístico por si el modelo omite el marcador.
+  if (
+    (currentPhase === "structuring" || currentPhase === "generation") &&
+    (lower.includes("# contexto del proyecto") || lower.includes("modelo de datos"))
+  ) return "done";
   if (
     currentPhase === "exploration" &&
     (lower.includes("problema principal") ||
       lower.includes("usuarios y roles") ||
       lower.includes("esto captura bien"))
   ) return "structuring";
-  if (
-    (currentPhase === "structuring" || currentPhase === "generation") &&
-    lower.includes("# contexto del proyecto")
-  ) return "done";
+
   return currentPhase;
 }
 
@@ -45,12 +63,21 @@ export default function SessionPage({ params }: SessionPageProps) {
     const s = getSession(id);
     if (!s) { router.push("/dashboard"); return; }
     setSession(s);
-    if (s.messages.length === 0) {
+    // La entrevista solo arranca una vez capturado el contacto del prospecto.
+    if (s.contact && s.messages.length === 0) {
       sendGreeting(s);
     } else {
       setInitialized(true);
     }
   }, [id]);
+
+  const handleContactSubmit = (contact: Contact) => {
+    if (!session) return;
+    const updated: Session = { ...session, contact, updatedAt: new Date().toISOString() };
+    updateSession(updated);
+    // Solo arrancamos la entrevista si aún no hay mensajes (no pisar una conversación existente).
+    if (updated.messages.length === 0) sendGreeting(updated);
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -89,7 +116,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Error al contactar la IA"); setInitialized(true); return; }
-      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: data.content, createdAt: new Date().toISOString() };
+      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: stripMarkers(data.content), createdAt: new Date().toISOString() };
       updateSession({ ...s, messages: [greetingMsg, assistantMsg], updatedAt: new Date().toISOString() });
     } catch { setError("Error de conexión."); }
     finally { setSending(false); setInitialized(true); }
@@ -116,6 +143,7 @@ export default function SessionPage({ params }: SessionPageProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           projectTitle: s.title,
+          contact: s.contact,
           commercialSummary: commercial,
           finalPrompt: s.finalPrompt,
         }),
@@ -148,9 +176,12 @@ export default function SessionPage({ params }: SessionPageProps) {
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Error"); setInputValue(userContent); updateSession(session); return; }
 
-      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: data.content, createdAt: new Date().toISOString() };
+      // Detectar fase con el contenido CRUDO (con marcadores); mostrar/guardar LIMPIO.
       const newPhase = detectPhase(data.content, optimistic.phase);
       const isFinalPrompt = newPhase === "done";
+      const cleanContent = stripMarkers(data.content);
+
+      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: cleanContent, createdAt: new Date().toISOString() };
 
       let title = optimistic.title;
       if (title === "Nueva sesión" && session.messages.length <= 2) {
@@ -162,7 +193,7 @@ export default function SessionPage({ params }: SessionPageProps) {
         title,
         phase: newPhase,
         messages: [...optimistic.messages, assistantMsg],
-        finalPrompt: isFinalPrompt ? data.content : optimistic.finalPrompt,
+        finalPrompt: isFinalPrompt ? cleanContent : optimistic.finalPrompt,
         updatedAt: new Date().toISOString(),
       });
     } catch { setError("Error de conexión. Intenta de nuevo."); setInputValue(userContent); updateSession(session); }
@@ -190,8 +221,16 @@ export default function SessionPage({ params }: SessionPageProps) {
     );
   }
 
+  // Gate: primero capturamos el contacto del prospecto.
+  if (!session.contact) {
+    return <ContactForm onSubmit={handleContactSubmit} />;
+  }
+
   const visibleMessages = session.messages.filter(
-    m => !(m.role === "user" && m.content === "Hola, estoy listo para comenzar.")
+    m =>
+      !(m.role === "user" && m.content === "Hola, estoy listo para comenzar.") &&
+      // Ocultamos el mensaje del Prompt Master del chat: se muestra en su tarjeta.
+      !(m.role === "assistant" && session.phase === "done" && m.content === session.finalPrompt)
   );
 
   return (
@@ -233,6 +272,11 @@ export default function SessionPage({ params }: SessionPageProps) {
                 </div>
               </div>
             </div>
+          )}
+
+          {/* Prompt Master — entregable descargable */}
+          {session.phase === "done" && session.finalPrompt && (
+            <PromptMasterCard finalPrompt={session.finalPrompt} projectTitle={session.title} />
           )}
 
           {/* Commercial Summary — aparece cuando la entrevista termina */}
