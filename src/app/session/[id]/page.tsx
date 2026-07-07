@@ -13,6 +13,7 @@ import {
   stripMarkers,
 } from "@/lib/types";
 import { getSession, saveSession } from "@/lib/storage";
+import { sendLeadEmail } from "@/lib/leadEmail";
 import ChatMessage from "@/components/ChatMessage";
 import PhaseIndicator from "@/components/PhaseIndicator";
 import CommercialSummary from "@/components/CommercialSummary";
@@ -137,19 +138,13 @@ export default function SessionPage({ params }: SessionPageProps) {
       const withSummary: Session = { ...s, commercialSummary: commercial, updatedAt: new Date().toISOString() };
       updateSession(withSummary);
 
-      // Send email
-      const emailRes = await fetch("/api/send-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          projectTitle: s.title,
-          contact: s.contact,
-          commercialSummary: commercial,
-          finalPrompt: s.finalPrompt,
-        }),
+      // Enviar el email DESDE EL NAVEGADOR (Web3Forms bloquea IPs de servidor).
+      const sent = await sendLeadEmail({
+        projectTitle: s.title,
+        contact: s.contact,
+        commercialSummary: commercial,
+        finalPrompt: s.finalPrompt ?? "",
       });
-      const emailData = await emailRes.json();
-      const sent = emailRes.ok && !emailData.error;
 
       updateSession({ ...withSummary, emailSent: sent, updatedAt: new Date().toISOString() });
     } catch { /* keep going */ }
