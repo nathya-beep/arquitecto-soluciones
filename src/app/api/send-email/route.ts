@@ -108,21 +108,41 @@ ${finalPrompt}
     formData.append("Proyecto", projectTitle);
     formData.append("Propuesta Comercial y Prompt Master", emailBody);
 
+    // formsubmit RECHAZA llamadas sin Origin/Referer de navegador ("Make sure you
+    // open this page through a web server"). Como esto corre en el servidor,
+    // reenviamos el origen real de la petición (con fallback a producción).
+    const origin =
+      request.headers.get("origin") ||
+      request.nextUrl.origin ||
+      "https://arquitecto-soluciones.vercel.app";
+
     const response = await fetch(`https://formsubmit.co/ajax/${RECIPIENT}`, {
       method: "POST",
-      headers: { Accept: "application/json" },
+      headers: {
+        Accept: "application/json",
+        Origin: origin,
+        Referer: `${origin}/`,
+      },
       body: formData,
     });
 
-    const data = await response.json().catch(() => ({}));
+    const data = await response.json().catch(() => ({} as Record<string, unknown>));
+    const success = data.success === "true" || data.success === true;
+    const message = typeof data.message === "string" ? data.message : "";
+    const needsActivation = /activat/i.test(message);
 
-    if (response.ok && (data.success === "true" || data.success === true)) {
-      return NextResponse.json({ ok: true });
+    if (success) {
+      return NextResponse.json({ ok: true, delivered: true });
     }
 
-    // Si es el primer envío, formsubmit envía email de activación al destinatario
-    // y responde con un estado especial — igual lo consideramos OK
-    return NextResponse.json({ ok: true, note: "activation_pending" });
+    // Primer uso: formsubmit envía un email de activación al destinatario.
+    // No es un error, pero este envío aún NO se entrega hasta activar.
+    if (needsActivation) {
+      return NextResponse.json({ ok: true, delivered: false, activation: true });
+    }
+
+    console.error("formsubmit error:", message || data);
+    return NextResponse.json({ error: message || "Error enviando email" }, { status: 502 });
 
   } catch (err) {
     console.error("Email error:", err);
