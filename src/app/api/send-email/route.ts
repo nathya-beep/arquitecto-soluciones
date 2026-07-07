@@ -191,9 +191,20 @@ async function sendViaWeb3Forms(opts: {
   const accessKey = (process.env.WEB3FORMS_ACCESS_KEY ?? "").trim();
   if (!accessKey) return { ok: false, error: "no_key" };
 
+  // Web3Forms (plan gratis) rechaza llamadas que no parezcan de navegador.
+  // Enviamos cabeceras tipo navegador para que acepte la petición del servidor.
   const res = await fetch("https://api.web3forms.com/submit", {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+      Origin: "https://arquitecto-soluciones.vercel.app",
+      Referer: "https://arquitecto-soluciones.vercel.app/",
+      "Sec-Fetch-Site": "cross-site",
+      "Sec-Fetch-Mode": "cors",
+    },
     body: JSON.stringify({
       access_key: accessKey,
       subject: opts.subject,
