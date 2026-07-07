@@ -180,6 +180,41 @@ async function sendViaResend(opts: {
   return { ok: false, error: errText || "Resend error", status: 502 };
 }
 
+/** Envío vía Web3Forms (clave gratis, sin cuenta; aguanta payloads grandes). */
+async function sendViaWeb3Forms(opts: {
+  subject: string;
+  text: string;
+  contact: Contact;
+  projectTitle: string;
+  replyTo?: string;
+}): Promise<{ ok: boolean; error?: string; status?: number }> {
+  const accessKey = (process.env.WEB3FORMS_ACCESS_KEY ?? "").trim();
+  if (!accessKey) return { ok: false, error: "no_key" };
+
+  const res = await fetch("https://api.web3forms.com/submit", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "application/json" },
+    body: JSON.stringify({
+      access_key: accessKey,
+      subject: opts.subject,
+      from_name: "Arquitecto de Soluciones",
+      ...(opts.replyTo ? { replyto: opts.replyTo } : {}),
+      Prospecto: opts.contact?.name || "—",
+      Email: opts.contact?.email || "—",
+      WhatsApp: opts.contact?.whatsapp || "—",
+      Empresa: opts.contact?.company || "—",
+      Proyecto: opts.projectTitle,
+      "Propuesta Comercial y Prompt Master": opts.text,
+    }),
+  });
+
+  const data = await res.json().catch(() => ({} as Record<string, unknown>));
+  if (res.ok && data.success === true) return { ok: true };
+  const message = typeof data.message === "string" ? data.message : "Web3Forms error";
+  console.error("Web3Forms error:", res.status, message);
+  return { ok: false, error: message, status: 502 };
+}
+
 /** Respaldo vía formsubmit (sin necesidad de key). */
 async function sendViaFormsubmit(opts: {
   subject: string;
@@ -245,7 +280,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Error enviando email (Resend)" }, { status: 502 });
     }
 
-    // 2) Respaldo: formsubmit
+    // 2) Web3Forms (clave gratis sin cuenta; aguanta payloads grandes)
+    const web3 = await sendViaWeb3Forms({ subject, text, contact, projectTitle, replyTo });
+    if (web3.ok) return NextResponse.json({ ok: true, delivered: true, via: "web3forms" });
+    if (web3.error && web3.error !== "no_key") {
+      return NextResponse.json({ error: "Error enviando email (Web3Forms)" }, { status: 502 });
+    }
+
+    // 3) Respaldo: formsubmit
     const origin =
       request.headers.get("origin") ||
       request.nextUrl.origin ||
