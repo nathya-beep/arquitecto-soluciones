@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { CommercialSummary } from "@/lib/types";
+import { callGroq } from "@/lib/groq";
 
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
@@ -20,74 +21,63 @@ Devuelve SOLO un objeto JSON válido con exactamente estos campos (sin markdown,
   "callToAction": "Frase de cierre motivadora y urgente para implementar la solución"
 }`;
 
-export async function POST(request: NextRequest) {
-  const apiKey = (process.env.GROQ_API_KEY ?? "").replace(/﻿/g, "").trim();
-  if (!apiKey) return NextResponse.json({ error: "Sin API key" }, { status: 503 });
+const FALLBACK_SUMMARY: CommercialSummary = {
+  headline: "Automatización que transforma tu negocio",
+  problem: "Tu equipo dedica horas a tareas repetitivas que una herramienta inteligente puede resolver.",
+  benefits: [
+    "Ahorra horas de trabajo manual cada semana",
+    "Elimina errores humanos en procesos críticos",
+    "Escala operaciones sin aumentar el equipo",
+    "Datos en tiempo real para decisiones más rápidas",
+  ],
+  howItWorks: [
+    "El sistema captura y procesa tu información automáticamente",
+    "Aplica las reglas de negocio definidas para tu caso específico",
+    "Entrega resultados listos para usar en segundos",
+  ],
+  roiEstimate: "Recupera la inversión en el primer mes con el tiempo ahorrado en procesos manuales",
+  callToAction: "Implementa esta automatización hoy y libera a tu equipo para lo que realmente importa",
+};
 
+export async function POST(request: NextRequest) {
   let body: unknown;
-  try { body = await request.json(); } catch {
+  try {
+    body = await request.json();
+  } catch {
     return NextResponse.json({ error: "JSON inválido" }, { status: 400 });
   }
 
   const parsed = RequestSchema.safeParse(body);
-  if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
-
-  try {
-    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "llama-3.3-70b-versatile",
-        messages: [
-          { role: "system", content: COMMERCIAL_SYSTEM },
-          {
-            role: "user",
-            content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
-          },
-        ],
-        max_tokens: 1024,
-        temperature: 0.5,
-      }),
-    });
-
-    if (!response.ok) {
-      console.error("Groq commercial error:", response.status);
-      return NextResponse.json({ error: "Error generando resumen" }, { status: 502 });
-    }
-
-    const data = await response.json();
-    const text = data?.choices?.[0]?.message?.content ?? "{}";
-
-    let summary: CommercialSummary;
-    try {
-      const clean = text.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
-      summary = JSON.parse(clean);
-    } catch {
-      summary = {
-        headline: "Automatización que transforma tu negocio",
-        problem: "Tu equipo dedica horas a tareas repetitivas que una herramienta inteligente puede resolver.",
-        benefits: [
-          "Ahorra horas de trabajo manual cada semana",
-          "Elimina errores humanos en procesos críticos",
-          "Escala operaciones sin aumentar el equipo",
-          "Datos en tiempo real para decisiones más rápidas",
-        ],
-        howItWorks: [
-          "El sistema captura y procesa tu información automáticamente",
-          "Aplica las reglas de negocio definidas para tu caso específico",
-          "Entrega resultados listos para usar en segundos",
-        ],
-        roiEstimate: "Recupera la inversión en el primer mes con el tiempo ahorrado en procesos manuales",
-        callToAction: "Implementa esta automatización hoy y libera a tu equipo para lo que realmente importa",
-      };
-    }
-
-    return NextResponse.json({ summary });
-  } catch (err) {
-    console.error("Groq commercial fetch error:", err);
-    return NextResponse.json({ error: "Error generando resumen" }, { status: 502 });
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   }
+
+  const result = await callGroq({
+    messages: [
+      { role: "system", content: COMMERCIAL_SYSTEM },
+      {
+        role: "user",
+        content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
+      },
+    ],
+    maxTokens: 1024,
+    temperature: 0.5,
+  });
+
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error }, { status: result.status });
+  }
+
+  let summary: CommercialSummary;
+  try {
+    const clean = (result.content ?? "{}")
+      .replace(/```json\n?/g, "")
+      .replace(/```\n?/g, "")
+      .trim();
+    summary = JSON.parse(clean);
+  } catch {
+    summary = FALLBACK_SUMMARY;
+  }
+
+  return NextResponse.json({ summary });
 }
