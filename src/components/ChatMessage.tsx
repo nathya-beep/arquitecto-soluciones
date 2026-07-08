@@ -1,10 +1,15 @@
+"use client";
+
 import { Message } from "@/lib/types";
+import { DATE_LOCALE } from "@/lib/i18n";
+import { useLang } from "./LangProvider";
 
 interface ChatMessageProps {
   message: Message;
 }
 
 export default function ChatMessage({ message }: ChatMessageProps) {
+  const { lang } = useLang();
   const isUser = message.role === "user";
 
   const formatContent = (content: string) => {
@@ -85,7 +90,7 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           {formatContent(message.content)}
         </div>
         <p className={`text-xs mt-1 ${isUser ? "text-indigo-200" : "text-slate-400"}`}>
-          {new Date(message.createdAt).toLocaleTimeString("es-ES", {
+          {new Date(message.createdAt).toLocaleTimeString(DATE_LOCALE[lang], {
             hour: "2-digit",
             minute: "2-digit",
           })}

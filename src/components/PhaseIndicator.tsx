@@ -1,12 +1,14 @@
-import { Phase, PHASE_LABELS } from "@/lib/types";
+import { Phase } from "@/lib/types";
+import { Dict } from "@/lib/i18n";
 
 interface PhaseIndicatorProps {
   currentPhase: Phase;
+  t: Dict;
 }
 
 const phases: Phase[] = ["exploration", "structuring", "generation", "done"];
 
-export default function PhaseIndicator({ currentPhase }: PhaseIndicatorProps) {
+export default function PhaseIndicator({ currentPhase, t }: PhaseIndicatorProps) {
   const currentIndex = phases.indexOf(currentPhase);
 
   return (
@@ -34,9 +36,9 @@ export default function PhaseIndicator({ currentPhase }: PhaseIndicatorProps) {
                 <span>{index + 1}</span>
               )}
               <span className="hidden sm:inline">
-                {phase === "exploration" && "Exploración"}
-                {phase === "structuring" && "Estructuración"}
-                {phase === "generation" && "Generación"}
+                {phase === "exploration" && t.phaseExploration}
+                {phase === "structuring" && t.phaseStructuring}
+                {phase === "generation" && t.phaseGeneration}
               </span>
             </div>
             {index < 2 && (
@@ -46,7 +48,7 @@ export default function PhaseIndicator({ currentPhase }: PhaseIndicatorProps) {
         );
       })}
       {currentPhase === "done" && (
-        <span className="ml-2 text-xs text-green-600 font-medium">Prompt Master listo</span>
+        <span className="ml-2 text-xs text-green-600 font-medium">{t.promptMasterReady}</span>
       )}
     </div>
   );

@@ -23,10 +23,10 @@ export function saveSession(session: Session): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([session, ...sessions]));
 }
 
-export function createSession(): Session {
+export function createSession(title = "Nueva sesión"): Session {
   const session: Session = {
     id: crypto.randomUUID(),
-    title: "Nueva sesión",
+    title,
     phase: "exploration",
     contact: null,
     messages: [],

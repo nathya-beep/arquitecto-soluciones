@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useLang } from "./LangProvider";
 
 interface Props {
   finalPrompt: string;
@@ -19,6 +20,7 @@ function slugify(text: string): string {
 }
 
 export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
+  const { t } = useLang();
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
 
@@ -54,8 +56,8 @@ export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
             </svg>
           </div>
           <div className="min-w-0">
-            <h3 className="font-semibold text-slate-800 text-sm truncate">Prompt Master técnico</h3>
-            <p className="text-xs text-slate-400">Tu especificación lista para construir la herramienta</p>
+            <h3 className="font-semibold text-slate-800 text-sm truncate">{t.pmTitle}</h3>
+            <p className="text-xs text-slate-400">{t.pmSubtitle}</p>
           </div>
         </div>
       </div>
@@ -68,7 +70,7 @@ export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
           <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
           </svg>
-          Descargar .md
+          {t.pmDownload}
         </button>
         <button
           onClick={copy}
@@ -79,14 +81,14 @@ export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
               <svg className="w-4 h-4 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
               </svg>
-              Copiado
+              {t.pmCopied}
             </>
           ) : (
             <>
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
               </svg>
-              Copiar
+              {t.pmCopy}
             </>
           )}
         </button>
@@ -94,7 +96,7 @@ export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
           onClick={() => setOpen((v) => !v)}
           className="flex items-center gap-2 text-slate-500 px-3 py-2 rounded-xl text-sm font-medium hover:bg-slate-100 transition-colors ml-auto"
         >
-          {open ? "Ocultar" : "Ver contenido"}
+          {open ? t.pmHide : t.pmView}
           <svg className={`w-4 h-4 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
           </svg>

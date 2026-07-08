@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { CommercialSummary, OWNER_EMAIL } from "@/lib/types";
 
 const RequestSchema = z.object({
   projectTitle: z.string(),
@@ -21,244 +22,159 @@ const RequestSchema = z.object({
     callToAction: z.string(),
   }),
   finalPrompt: z.string(),
+  lang: z.enum(["es", "en"]).optional(),
 });
 
-const RECIPIENT = "nathaliaaguillon@gmail.com";
-// Remitente de Resend válido sin dominio propio (solo entrega al dueño de la cuenta).
-const RESEND_FROM = "Arquitecto de Soluciones <onboarding@resend.dev>";
-
 type Contact = z.infer<typeof RequestSchema>["contact"];
-type CommercialSummary = z.infer<typeof RequestSchema>["commercialSummary"];
+type Lang = "es" | "en";
+
+// --- Configuración de Resend ---------------------------------------------
+// Remitente para el correo a la DUEÑA. `onboarding@resend.dev` funciona sin
+// dominio propio, pero Resend solo lo entrega a la cuenta dueña (la que registró
+// el correo OWNER_EMAIL en Resend).
+const RESEND_FROM =
+  (process.env.RESEND_FROM ?? "").trim() || "Arquitecto de Soluciones <onboarding@resend.dev>";
+// Remitente para el correo al LEAD (su propio email). Requiere un DOMINIO
+// VERIFICADO en Resend (ej: "Propuestas <propuestas@tudominio.com>"). Si está
+// vacío, NO se envía correo al lead (queda desactivado hasta tener dominio).
+const RESEND_LEAD_FROM = (process.env.RESEND_LEAD_FROM ?? "").trim();
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const STR: Record<Lang, Record<string, string>> = {
+  es: {
+    newLead: "Nuevo lead",
+    subjectOwner: "Nuevo lead",
+    subjectLead: "Tu propuesta de automatización",
+    prospectData: "Datos del prospecto",
+    name: "Nombre",
+    email: "Email",
+    whatsapp: "WhatsApp",
+    company: "Empresa",
+    problem: "El problema",
+    benefits: "Beneficios clave",
+    howItWorks: "Cómo funciona",
+    roi: "ROI estimado",
+    nextStep: "Próximo paso",
+    attachmentNote:
+      "La especificación técnica completa (Prompt Master) va adjunta como archivo .md.",
+    leadHi: "Hola",
+    leadIntro:
+      "Gracias por tu interés. Aquí tienes la propuesta de automatización que preparamos para ti:",
+    leadOutro: "Te contactaremos pronto para dar el siguiente paso.",
+  },
+  en: {
+    newLead: "New lead",
+    subjectOwner: "New lead",
+    subjectLead: "Your automation proposal",
+    prospectData: "Prospect details",
+    name: "Name",
+    email: "Email",
+    whatsapp: "WhatsApp",
+    company: "Company",
+    problem: "The problem",
+    benefits: "Key benefits",
+    howItWorks: "How it works",
+    roi: "Estimated ROI",
+    nextStep: "Next step",
+    attachmentNote:
+      "The full technical specification (Prompt Master) is attached as a .md file.",
+    leadHi: "Hi",
+    leadIntro:
+      "Thanks for your interest. Here's the automation proposal we prepared for you:",
+    leadOutro: "We'll reach out soon to take the next step.",
+  },
+};
 
 function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function buildText(
-  projectTitle: string,
-  contact: Contact,
-  cs: CommercialSummary,
-  finalPrompt: string
-): string {
-  const contactBlock = contact
-    ? `DATOS DEL PROSPECTO (LEAD)
---------------------------
-Nombre:   ${contact.name || "—"}
-Email:    ${contact.email || "—"}
-WhatsApp: ${contact.whatsapp || "—"}
-Empresa:  ${contact.company || "—"}
+function slugify(text: string): string {
+  const noAccents = text.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  return noAccents.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 50) || "proyecto";
+}
 
----
-`
-    : "";
+const H2 =
+  'style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px"';
 
+/** Bloque HTML compartido: encabezado + propuesta comercial (SIN Prompt Master). */
+function proposalBlocks(projectTitle: string, cs: CommercialSummary, s: Record<string, string>, badge: string): string {
   return `
-PROPUESTA DE AUTOMATIZACIÓN
-============================
-${cs.headline}
+  <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:24px;border-radius:16px;text-align:center">
+    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.85">${escapeHtml(badge)}</div>
+    <h1 style="margin:6px 0 0;font-size:22px">${escapeHtml(cs.headline)}</h1>
+    <div style="opacity:.85;font-size:14px;margin-top:4px">${escapeHtml(projectTitle)}</div>
+  </div>
 
-PROYECTO: ${projectTitle}
+  <h2 ${H2}>${escapeHtml(s.problem)}</h2>
+  <p>${escapeHtml(cs.problem)}</p>
 
----
+  <h2 ${H2}>${escapeHtml(s.benefits)}</h2>
+  <ul>${cs.benefits.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>
 
-${contactBlock}EL PROBLEMA
------------
-${cs.problem}
+  <h2 ${H2}>${escapeHtml(s.howItWorks)}</h2>
+  <ol>${cs.howItWorks.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol>
 
----
+  <h2 ${H2}>${escapeHtml(s.roi)}</h2>
+  <p style="background:#ecfdf5;border-radius:10px;padding:12px">${escapeHtml(cs.roiEstimate)}</p>
 
-BENEFICIOS CLAVE
-----------------
-${cs.benefits.map((b, i) => `${i + 1}. ${b}`).join("\n")}
-
----
-
-CÓMO FUNCIONA
--------------
-${cs.howItWorks.map((s, i) => `Paso ${i + 1}: ${s}`).join("\n")}
-
----
-
-RETORNO DE INVERSIÓN ESTIMADO
-------------------------------
-${cs.roiEstimate}
-
----
-
-PRÓXIMO PASO
-------------
-${cs.callToAction}
-
----
-
-ESPECIFICACIÓN TÉCNICA COMPLETA (Prompt Master)
-================================================
-
-${finalPrompt}
-`.trim();
+  <h2 ${H2}>${escapeHtml(s.nextStep)}</h2>
+  <p>${escapeHtml(cs.callToAction)}</p>`;
 }
 
-function buildHtml(
-  projectTitle: string,
-  contact: Contact,
-  cs: CommercialSummary,
-  finalPrompt: string
-): string {
+/** Correo a la DUEÑA: datos del prospecto + propuesta + nota del adjunto (sin texto del prompt). */
+function ownerHtml(projectTitle: string, contact: Contact, cs: CommercialSummary, s: Record<string, string>): string {
   const contactRows = contact
     ? `
-    <table style="width:100%;border-collapse:collapse;margin:8px 0 20px">
-      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600;width:120px">Nombre</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.name || "—")}</td></tr>
-      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">Email</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.email || "—")}</td></tr>
-      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">WhatsApp</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.whatsapp || "—")}</td></tr>
-      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">Empresa</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.company || "—")}</td></tr>
+    <h2 ${H2}>${escapeHtml(s.prospectData)}</h2>
+    <table style="width:100%;border-collapse:collapse;margin:8px 0 4px">
+      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600;width:120px">${escapeHtml(s.name)}</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.name || "—")}</td></tr>
+      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">${escapeHtml(s.email)}</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.email || "—")}</td></tr>
+      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">${escapeHtml(s.whatsapp)}</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.whatsapp || "—")}</td></tr>
+      <tr><td style="padding:6px 10px;background:#eef2ff;font-weight:600">${escapeHtml(s.company)}</td><td style="padding:6px 10px;border:1px solid #e2e8f0">${escapeHtml(contact.company || "—")}</td></tr>
     </table>`
     : "";
 
   return `<!doctype html>
 <html><body style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#0f172a;line-height:1.5;max-width:640px;margin:0 auto;padding:16px">
-  <div style="background:linear-gradient(135deg,#4f46e5,#7c3aed);color:#fff;padding:24px;border-radius:16px;text-align:center">
-    <div style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;opacity:.85">Nuevo lead</div>
-    <h1 style="margin:6px 0 0;font-size:22px">${escapeHtml(cs.headline)}</h1>
-    <div style="opacity:.85;font-size:14px;margin-top:4px">${escapeHtml(projectTitle)}</div>
-  </div>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:24px 0 4px">Datos del prospecto</h2>
+  ${proposalBlocks(projectTitle, cs, s, s.newLead)}
   ${contactRows}
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px">El problema</h2>
-  <p>${escapeHtml(cs.problem)}</p>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px">Beneficios clave</h2>
-  <ul>${cs.benefits.map((b) => `<li>${escapeHtml(b)}</li>`).join("")}</ul>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px">Cómo funciona</h2>
-  <ol>${cs.howItWorks.map((s) => `<li>${escapeHtml(s)}</li>`).join("")}</ol>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px">ROI estimado</h2>
-  <p style="background:#ecfdf5;border-radius:10px;padding:12px">${escapeHtml(cs.roiEstimate)}</p>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:20px 0 4px">Próximo paso</h2>
-  <p>${escapeHtml(cs.callToAction)}</p>
-
-  <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin:24px 0 4px">Prompt Master (especificación técnica)</h2>
-  <pre style="background:#0f172a;color:#e2e8f0;padding:16px;border-radius:12px;white-space:pre-wrap;word-break:break-word;font-size:12px">${escapeHtml(finalPrompt)}</pre>
+  <p style="margin-top:20px;background:#f1f5f9;border-radius:10px;padding:12px;font-size:13px;color:#475569">📎 ${escapeHtml(s.attachmentNote)}</p>
 </body></html>`;
 }
 
-/** Envío principal vía Resend (requiere RESEND_API_KEY). */
-async function sendViaResend(opts: {
-  subject: string;
-  text: string;
-  html: string;
-  replyTo?: string;
-}): Promise<{ ok: boolean; error?: string; status?: number }> {
-  const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
-  if (!apiKey) return { ok: false, error: "no_key" };
+/** Correo al LEAD: solo la propuesta (sin datos internos, sin adjunto, sin mención al Prompt Master). */
+function leadHtml(projectTitle: string, contact: Contact, cs: CommercialSummary, s: Record<string, string>): string {
+  const name = contact?.name ? ` ${contact.name}` : "";
+  return `<!doctype html>
+<html><body style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#0f172a;line-height:1.5;max-width:640px;margin:0 auto;padding:16px">
+  <p style="font-size:16px">${escapeHtml(s.leadHi)}${escapeHtml(name)},</p>
+  <p>${escapeHtml(s.leadIntro)}</p>
+  ${proposalBlocks(projectTitle, cs, s, s.subjectLead)}
+  <p style="margin-top:20px">${escapeHtml(s.leadOutro)}</p>
+</body></html>`;
+}
 
+interface ResendPayload {
+  from: string;
+  to: string[];
+  subject: string;
+  html: string;
+  reply_to?: string;
+  attachments?: { filename: string; content: string }[];
+}
+
+async function sendViaResend(apiKey: string, payload: ResendPayload): Promise<{ ok: boolean; error?: string }> {
   const res = await fetch("https://api.resend.com/emails", {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: RESEND_FROM,
-      to: [RECIPIENT],
-      subject: opts.subject,
-      text: opts.text,
-      html: opts.html,
-      ...(opts.replyTo ? { reply_to: opts.replyTo } : {}),
-    }),
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
-
   if (res.ok) return { ok: true };
   const errText = await res.text().catch(() => "");
   console.error("Resend error:", res.status, errText);
-  return { ok: false, error: errText || "Resend error", status: 502 };
-}
-
-/** Envío vía Web3Forms (clave gratis, sin cuenta; aguanta payloads grandes). */
-async function sendViaWeb3Forms(opts: {
-  subject: string;
-  text: string;
-  contact: Contact;
-  projectTitle: string;
-  replyTo?: string;
-}): Promise<{ ok: boolean; error?: string; status?: number }> {
-  const accessKey = (process.env.WEB3FORMS_ACCESS_KEY ?? "").trim();
-  if (!accessKey) return { ok: false, error: "no_key" };
-
-  // Web3Forms (plan gratis) rechaza llamadas que no parezcan de navegador.
-  // Enviamos cabeceras tipo navegador para que acepte la petición del servidor.
-  const res = await fetch("https://api.web3forms.com/submit", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-      Origin: "https://arquitecto-soluciones.vercel.app",
-      Referer: "https://arquitecto-soluciones.vercel.app/",
-      "Sec-Fetch-Site": "cross-site",
-      "Sec-Fetch-Mode": "cors",
-    },
-    body: JSON.stringify({
-      access_key: accessKey,
-      subject: opts.subject,
-      from_name: "Arquitecto de Soluciones",
-      ...(opts.replyTo ? { replyto: opts.replyTo } : {}),
-      Prospecto: opts.contact?.name || "—",
-      Email: opts.contact?.email || "—",
-      WhatsApp: opts.contact?.whatsapp || "—",
-      Empresa: opts.contact?.company || "—",
-      Proyecto: opts.projectTitle,
-      "Propuesta Comercial y Prompt Master": opts.text,
-    }),
-  });
-
-  const data = await res.json().catch(() => ({} as Record<string, unknown>));
-  if (res.ok && data.success === true) return { ok: true };
-  const message = typeof data.message === "string" ? data.message : "Web3Forms error";
-  console.error("Web3Forms error:", res.status, message);
-  return { ok: false, error: message, status: 502 };
-}
-
-/** Respaldo vía formsubmit (sin necesidad de key). */
-async function sendViaFormsubmit(opts: {
-  subject: string;
-  text: string;
-  contact: Contact;
-  projectTitle: string;
-  origin: string;
-  replyTo?: string;
-}): Promise<{ ok: boolean; delivered?: boolean; activation?: boolean; error?: string; status?: number }> {
-  const formData = new FormData();
-  formData.append("name", opts.contact?.name || "Arquitecto de Soluciones");
-  formData.append("email", opts.replyTo || "arquitecto@soluciones.app");
-  formData.append("_subject", opts.subject);
-  formData.append("_template", "table");
-  formData.append("Prospecto", opts.contact?.name || "—");
-  formData.append("Email", opts.contact?.email || "—");
-  formData.append("WhatsApp", opts.contact?.whatsapp || "—");
-  formData.append("Empresa", opts.contact?.company || "—");
-  formData.append("Proyecto", opts.projectTitle);
-  formData.append("Propuesta Comercial y Prompt Master", opts.text);
-
-  const res = await fetch(`https://formsubmit.co/ajax/${RECIPIENT}`, {
-    method: "POST",
-    headers: { Accept: "application/json", Origin: opts.origin, Referer: `${opts.origin}/` },
-    body: formData,
-  });
-
-  const data = await res.json().catch(() => ({} as Record<string, unknown>));
-  const success = data.success === "true" || data.success === true;
-  const message = typeof data.message === "string" ? data.message : "";
-  if (success) return { ok: true, delivered: true };
-  if (/activat/i.test(message)) return { ok: true, delivered: false, activation: true };
-  return { ok: false, error: message || "Error enviando email", status: 502 };
+  return { ok: false, error: errText || `Resend ${res.status}` };
 }
 
 export async function POST(request: NextRequest) {
@@ -273,41 +189,50 @@ export async function POST(request: NextRequest) {
   if (!parsed.success) return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
 
   const { projectTitle, contact, commercialSummary: cs, finalPrompt } = parsed.data;
-  const subjectWho = contact?.name ? ` — ${contact.name}` : "";
-  const subject = `Nuevo lead${subjectWho}: ${projectTitle}`;
-  const replyTo = contact?.email || undefined;
-  const text = buildText(projectTitle, contact, cs, finalPrompt);
+  const lang: Lang = parsed.data.lang === "en" ? "en" : "es";
+  const s = STR[lang];
 
-  try {
-    // 1) Resend (si hay key)
-    const resend = await sendViaResend({
-      subject,
-      text,
-      html: buildHtml(projectTitle, contact, cs, finalPrompt),
-      replyTo,
-    });
-    if (resend.ok) return NextResponse.json({ ok: true, delivered: true, via: "resend" });
-    if (resend.error && resend.error !== "no_key") {
-      return NextResponse.json({ error: "Error enviando email (Resend)" }, { status: 502 });
-    }
-
-    // 2) Web3Forms (clave gratis sin cuenta; aguanta payloads grandes)
-    const web3 = await sendViaWeb3Forms({ subject, text, contact, projectTitle, replyTo });
-    if (web3.ok) return NextResponse.json({ ok: true, delivered: true, via: "web3forms" });
-    if (web3.error && web3.error !== "no_key") {
-      return NextResponse.json({ error: "Error enviando email (Web3Forms)" }, { status: 502 });
-    }
-
-    // 3) Respaldo: formsubmit
-    const origin =
-      request.headers.get("origin") ||
-      request.nextUrl.origin ||
-      "https://arquitecto-soluciones.vercel.app";
-    const fs = await sendViaFormsubmit({ subject, text, contact, projectTitle, origin, replyTo });
-    if (fs.ok) return NextResponse.json({ ok: true, delivered: fs.delivered, activation: fs.activation, via: "formsubmit" });
-    return NextResponse.json({ error: fs.error }, { status: fs.status ?? 502 });
-  } catch (err) {
-    console.error("Email error:", err);
-    return NextResponse.json({ error: "Error enviando email" }, { status: 502 });
+  const apiKey = (process.env.RESEND_API_KEY ?? "").trim();
+  if (!apiKey) {
+    // Sin Resend configurado no podemos enviar (adjunto + correo al lead lo exigen).
+    return NextResponse.json({ ok: false, error: "resend_not_configured" }, { status: 200 });
   }
+
+  const who = contact?.name ? ` — ${contact.name}` : "";
+  const replyTo = contact?.email && EMAIL_RE.test(contact.email) ? contact.email : undefined;
+  const attachment = {
+    filename: `Prompt-Master-${slugify(projectTitle)}.md`,
+    content: Buffer.from(finalPrompt, "utf-8").toString("base64"),
+  };
+
+  // 1) Correo a la DUEÑA (propuesta + adjunto .md; sin texto del prompt en el cuerpo).
+  const owner = await sendViaResend(apiKey, {
+    from: RESEND_FROM,
+    to: [OWNER_EMAIL],
+    subject: `${s.subjectOwner}${who}: ${projectTitle}`,
+    html: ownerHtml(projectTitle, contact, cs, s),
+    ...(replyTo ? { reply_to: replyTo } : {}),
+    attachments: [attachment],
+  });
+
+  // 2) Correo al LEAD (solo propuesta) — solo si hay dominio verificado configurado.
+  let leadSent = false;
+  if (RESEND_LEAD_FROM && replyTo) {
+    const lead = await sendViaResend(apiKey, {
+      from: RESEND_LEAD_FROM,
+      to: [replyTo],
+      subject: `${s.subjectLead}: ${projectTitle}`,
+      html: leadHtml(projectTitle, contact, cs, s),
+    });
+    leadSent = lead.ok;
+  }
+
+  if (!owner.ok) {
+    return NextResponse.json(
+      { ok: false, ownerSent: false, leadSent, error: "owner_send_failed" },
+      { status: 502 }
+    );
+  }
+
+  return NextResponse.json({ ok: true, ownerSent: true, leadSent, via: "resend" });
 }

@@ -3,6 +3,8 @@
 import { useState } from "react";
 import Link from "next/link";
 import { Contact } from "@/lib/types";
+import { useLang } from "./LangProvider";
+import LangToggle from "./LangToggle";
 
 interface Props {
   onSubmit: (contact: Contact) => void;
@@ -11,6 +13,7 @@ interface Props {
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function ContactForm({ onSubmit }: Props) {
+  const { t } = useLang();
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [whatsapp, setWhatsapp] = useState("");
@@ -20,17 +23,17 @@ export default function ContactForm({ onSubmit }: Props) {
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!name.trim()) {
-      setError("Escribe tu nombre.");
+      setError(t.errName);
       return;
     }
     const hasEmail = email.trim() !== "";
     const hasWhatsapp = whatsapp.trim() !== "";
     if (!hasEmail && !hasWhatsapp) {
-      setError("Déjanos al menos un medio de contacto: email o WhatsApp.");
+      setError(t.errContactMethod);
       return;
     }
     if (hasEmail && !EMAIL_RE.test(email.trim())) {
-      setError("Ese email no parece válido.");
+      setError(t.errEmail);
       return;
     }
     setError("");
@@ -51,7 +54,8 @@ export default function ContactForm({ onSubmit }: Props) {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
             </svg>
           </Link>
-          <h1 className="font-medium text-slate-800 text-sm sm:text-base">Antes de empezar</h1>
+          <h1 className="font-medium text-slate-800 text-sm sm:text-base flex-1">{t.beforeStart}</h1>
+          <LangToggle />
         </div>
       </header>
 
@@ -63,52 +67,52 @@ export default function ContactForm({ onSubmit }: Props) {
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
               </svg>
             </div>
-            <h2 className="text-xl font-bold text-slate-800">¿Con quién hablamos?</h2>
+            <h2 className="text-xl font-bold text-slate-800">{t.whoAreYou}</h2>
             <p className="text-slate-500 text-sm mt-1">
-              Déjanos tus datos para enviarte la propuesta de tu automatización.
+              {t.contactSubtitle}
             </p>
           </div>
 
           <form onSubmit={submit} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-6 space-y-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Nombre *</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{t.labelName} *</label>
               <input
                 type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Tu nombre"
+                placeholder={t.phName}
                 className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Email</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{t.labelEmail}</label>
               <input
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="tu@email.com"
+                placeholder={t.phEmail}
                 className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">WhatsApp</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1">{t.labelWhatsapp}</label>
               <input
                 type="tel"
                 value={whatsapp}
                 onChange={(e) => setWhatsapp(e.target.value)}
-                placeholder="+1 809 000 0000"
+                placeholder={t.phWhatsapp}
                 className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1">
-                Empresa <span className="text-slate-400 font-normal">(opcional)</span>
+                {t.labelCompany} <span className="text-slate-400 font-normal">{t.optional}</span>
               </label>
               <input
                 type="text"
                 value={company}
                 onChange={(e) => setCompany(e.target.value)}
-                placeholder="Nombre de tu empresa"
+                placeholder={t.phCompany}
                 className="w-full border border-slate-200 rounded-xl px-4 py-2.5 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
               />
             </div>
@@ -121,10 +125,10 @@ export default function ContactForm({ onSubmit }: Props) {
               type="submit"
               className="w-full bg-indigo-600 text-white rounded-xl py-3 font-semibold hover:bg-indigo-700 transition-colors"
             >
-              Empezar la entrevista
+              {t.startInterview}
             </button>
             <p className="text-xs text-slate-400 text-center">
-              Indica al menos email o WhatsApp. Usaremos tus datos solo para enviarte la propuesta.
+              {t.contactHelper}
             </p>
           </form>
         </div>

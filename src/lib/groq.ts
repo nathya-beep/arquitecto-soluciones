@@ -36,6 +36,8 @@ interface CallGroqOptions {
   temperature?: number;
   /** Modelo a usar. Por defecto el potente (GROQ_MODEL). */
   model?: string;
+  /** Idioma de los mensajes de error hacia el usuario. */
+  lang?: Lang;
 }
 
 /** Parsea headers de Groq tipo "1m26.4s", "235ms" o "6.5s" a milisegundos. */
@@ -53,15 +55,36 @@ function parseResetMs(value: string | null): number | null {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+type Lang = "es" | "en";
+
+const ERR = {
+  es: {
+    noKey: "Falta configurar GROQ_API_KEY",
+    invalidKey: "API key inválida.",
+    aiError: "Error al contactar la IA.",
+    connError: "Error de conexión con la IA.",
+    limitGeneric: "Límite alcanzado. Intenta de nuevo en unos minutos.",
+    limitDaily: (m: number) => `Alcanzamos el límite de uso de la IA por hoy. Vuelve a intentar en ~${m} min.`,
+    limitShort: (s: number) => `Límite momentáneo alcanzado. Intenta de nuevo en ~${s} s.`,
+  },
+  en: {
+    noKey: "GROQ_API_KEY is not configured",
+    invalidKey: "Invalid API key.",
+    aiError: "Error contacting the AI.",
+    connError: "Connection error with the AI.",
+    limitGeneric: "Usage limit reached. Please try again in a few minutes.",
+    limitDaily: (m: number) => `We hit today's AI usage limit. Please try again in ~${m} min.`,
+    limitShort: (s: number) => `Momentary limit reached. Please try again in ~${s} s.`,
+  },
+} satisfies Record<Lang, Record<string, unknown>>;
+
 /** Mensaje de límite para el usuario, con la espera aproximada si se conoce. */
-function rateLimitMessage(waitMs: number | null): string {
-  if (waitMs === null) return "Límite alcanzado. Intenta de nuevo en unos minutos.";
+function rateLimitMessage(waitMs: number | null, lang: Lang): string {
+  const e = ERR[lang];
+  if (waitMs === null) return e.limitGeneric;
   const mins = Math.ceil(waitMs / 60_000);
-  if (mins >= 1) {
-    return `Alcanzamos el límite de uso de la IA por hoy. Vuelve a intentar en ~${mins} min.`;
-  }
-  const secs = Math.ceil(waitMs / 1000);
-  return `Límite momentáneo alcanzado. Intenta de nuevo en ~${secs} s.`;
+  if (mins >= 1) return e.limitDaily(mins);
+  return e.limitShort(Math.ceil(waitMs / 1000));
 }
 
 /**
@@ -74,10 +97,12 @@ export async function callGroq({
   maxTokens = 4096,
   temperature = 0.7,
   model = GROQ_MODEL,
+  lang = "es",
 }: CallGroqOptions): Promise<GroqResult> {
+  const e = ERR[lang];
   const apiKey = getGroqApiKey();
   if (!apiKey) {
-    return { ok: false, error: "Falta configurar GROQ_API_KEY", status: 503 };
+    return { ok: false, error: e.noKey, status: 503 };
   }
 
   // Espera máxima que aceptamos reintentar dentro del request. Vercel corta las
@@ -111,7 +136,7 @@ export async function callGroq({
       console.error("Groq error:", response.status, errText);
 
       if (response.status === 401) {
-        return { ok: false, error: "API key inválida.", status: 502 };
+        return { ok: false, error: e.invalidKey, status: 502 };
       }
 
       if (response.status === 429) {
@@ -129,16 +154,16 @@ export async function callGroq({
           continue;
         }
         // Espera larga → mensaje honesto con la duración aproximada.
-        return { ok: false, error: rateLimitMessage(waitMs), status: 429 };
+        return { ok: false, error: rateLimitMessage(waitMs, lang), status: 429 };
       }
 
-      return { ok: false, error: "Error al contactar la IA.", status: 502 };
+      return { ok: false, error: e.aiError, status: 502 };
     }
 
     // Se agotaron los intentos (el reintento tras 429 también falló).
-    return { ok: false, error: rateLimitMessage(null), status: 429 };
+    return { ok: false, error: rateLimitMessage(null, lang), status: 429 };
   } catch (err) {
     console.error("Groq fetch error:", err);
-    return { ok: false, error: "Error de conexión con la IA.", status: 502 };
+    return { ok: false, error: e.connError, status: 502 };
   }
 }

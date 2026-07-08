@@ -6,7 +6,11 @@ import { callGroq, GROQ_MODEL_FAST } from "@/lib/groq";
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
   title: z.string(),
+  lang: z.enum(["es", "en"]).optional(),
 });
+
+const ENGLISH_DIRECTIVE =
+  "\n\nIMPORTANT: Write ALL field values in ENGLISH. Keep the JSON keys exactly as specified above (in English).";
 
 const COMMERCIAL_SYSTEM = `Eres un consultor de automatización empresarial experto en ventas B2B.
 Tu tarea es leer una especificación técnica y crear una presentación COMERCIAL en español para vender la automatización a un tomador de decisiones de negocio.
@@ -21,7 +25,7 @@ Devuelve SOLO un objeto JSON válido con exactamente estos campos (sin markdown,
   "callToAction": "Frase de cierre motivadora y urgente para implementar la solución"
 }`;
 
-const FALLBACK_SUMMARY: CommercialSummary = {
+const FALLBACK_SUMMARY_ES: CommercialSummary = {
   headline: "Automatización que transforma tu negocio",
   problem: "Tu equipo dedica horas a tareas repetitivas que una herramienta inteligente puede resolver.",
   benefits: [
@@ -39,6 +43,24 @@ const FALLBACK_SUMMARY: CommercialSummary = {
   callToAction: "Implementa esta automatización hoy y libera a tu equipo para lo que realmente importa",
 };
 
+const FALLBACK_SUMMARY_EN: CommercialSummary = {
+  headline: "Automation that transforms your business",
+  problem: "Your team spends hours on repetitive tasks that a smart tool can handle.",
+  benefits: [
+    "Save hours of manual work every week",
+    "Eliminate human error in critical processes",
+    "Scale operations without growing the team",
+    "Real-time data for faster decisions",
+  ],
+  howItWorks: [
+    "The system captures and processes your information automatically",
+    "It applies the business rules defined for your specific case",
+    "It delivers ready-to-use results in seconds",
+  ],
+  roiEstimate: "Recover your investment in the first month through the time saved on manual work",
+  callToAction: "Deploy this automation today and free your team for what truly matters",
+};
+
 export async function POST(request: NextRequest) {
   let body: unknown;
   try {
@@ -52,9 +74,12 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   }
 
+  const isEn = parsed.data.lang === "en";
+  const system = isEn ? COMMERCIAL_SYSTEM + ENGLISH_DIRECTIVE : COMMERCIAL_SYSTEM;
+
   const result = await callGroq({
     messages: [
-      { role: "system", content: COMMERCIAL_SYSTEM },
+      { role: "system", content: system },
       {
         role: "user",
         content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
@@ -64,6 +89,7 @@ export async function POST(request: NextRequest) {
     temperature: 0.5,
     // Modelo rápido: reserva el presupuesto diario del 70b para el Prompt Master.
     model: GROQ_MODEL_FAST,
+    lang: parsed.data.lang,
   });
 
   if (!result.ok) {
@@ -78,7 +104,7 @@ export async function POST(request: NextRequest) {
       .trim();
     summary = JSON.parse(clean);
   } catch {
-    summary = FALLBACK_SUMMARY;
+    summary = isEn ? FALLBACK_SUMMARY_EN : FALLBACK_SUMMARY_ES;
   }
 
   return NextResponse.json({ summary });

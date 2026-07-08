@@ -2,8 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Session, PHASE_LABELS, PHASE_COLORS } from "@/lib/types";
+import { Session, PHASE_COLORS } from "@/lib/types";
 import { getSessions, createSession, deleteSession } from "@/lib/storage";
+import { Dict, DATE_LOCALE, Lang, phaseLabel } from "@/lib/i18n";
+import { useLang } from "@/components/LangProvider";
+import LangToggle from "@/components/LangToggle";
 import Link from "next/link";
 
 const SWIPE_REVEAL = 80; // px to reveal delete button
@@ -11,9 +14,13 @@ const SWIPE_REVEAL = 80; // px to reveal delete button
 function SwipeableCard({
   session,
   onDelete,
+  t,
+  lang,
 }: {
   session: Session;
   onDelete: (id: string) => void;
+  t: Dict;
+  lang: Lang;
 }) {
   const [offset, setOffset] = useState(0);
   const [revealed, setRevealed] = useState(false);
@@ -74,7 +81,7 @@ function SwipeableCard({
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
               d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
           </svg>
-          <span className="text-xs font-semibold">Eliminar</span>
+          <span className="text-xs font-semibold">{t.deleteLabel}</span>
         </button>
       </div>
 
@@ -99,24 +106,24 @@ function SwipeableCard({
               <div className="flex-1 min-w-0">
                 <h3 className="font-medium text-slate-800 truncate">{session.title}</h3>
                 <p className="text-sm text-slate-400 mt-1">
-                  {new Date(session.createdAt).toLocaleDateString("es-ES", {
+                  {new Date(session.createdAt).toLocaleDateString(DATE_LOCALE[lang], {
                     day: "numeric",
                     month: "long",
                     year: "numeric",
                   })}
                   {" · "}
-                  {session.messages.length} mensajes
+                  {session.messages.length} {t.messagesWord}
                 </p>
               </div>
               <div className="flex items-center gap-3 ml-4">
                 <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${PHASE_COLORS[session.phase]}`}>
-                  {PHASE_LABELS[session.phase]}
+                  {phaseLabel(t, session.phase)}
                 </span>
                 {/* Desktop delete button */}
                 <button
                   onClick={(e) => { e.preventDefault(); e.stopPropagation(); onDelete(session.id); }}
                   className="hidden sm:block opacity-0 group-hover:opacity-100 p-1 text-slate-400 hover:text-red-500 transition-all"
-                  title="Eliminar"
+                  title={t.deleteLabel}
                 >
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
@@ -141,6 +148,7 @@ function SwipeableCard({
 
 export default function DashboardPage() {
   const router = useRouter();
+  const { t, lang } = useLang();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [creating, setCreating] = useState(false);
 
@@ -150,12 +158,12 @@ export default function DashboardPage() {
 
   const handleCreate = () => {
     setCreating(true);
-    const session = createSession();
+    const session = createSession(t.newSessionTitle);
     router.push(`/session/${session.id}`);
   };
 
   const handleDelete = (id: string) => {
-    if (confirm("¿Eliminar este proyecto?")) {
+    if (confirm(t.confirmDelete)) {
       deleteSession(id);
       setSessions(getSessions());
     }
@@ -172,20 +180,23 @@ export default function DashboardPage() {
                   d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
               </svg>
             </div>
-            <span className="font-semibold text-slate-800">Arquitecto de Soluciones</span>
+            <span className="font-semibold text-slate-800">{t.brand}</span>
           </div>
-          <Link href="/" className="text-sm text-slate-500 hover:text-slate-800 transition-colors">
-            Inicio
-          </Link>
+          <div className="flex items-center gap-3">
+            <LangToggle />
+            <Link href="/" className="text-sm text-slate-500 hover:text-slate-800 transition-colors">
+              {t.home}
+            </Link>
+          </div>
         </div>
       </header>
 
       <main className="max-w-4xl mx-auto px-4 py-8">
         <div className="flex items-center justify-between mb-8">
           <div>
-            <h1 className="text-2xl font-bold text-slate-800">Mis proyectos</h1>
+            <h1 className="text-2xl font-bold text-slate-800">{t.myProjects}</h1>
             <p className="text-slate-500 mt-1 text-sm">
-              En móvil desliza ← para eliminar
+              {t.swipeHint}
             </p>
           </div>
           <button
@@ -196,7 +207,7 @@ export default function DashboardPage() {
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
             </svg>
-            Nuevo proyecto
+            {t.newProject}
           </button>
         </div>
 
@@ -208,13 +219,13 @@ export default function DashboardPage() {
                   d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
               </svg>
             </div>
-            <h3 className="text-lg font-medium text-slate-700 mb-2">Sin proyectos todavía</h3>
-            <p className="text-slate-500 mb-6">Crea tu primer proyecto y empieza la entrevista.</p>
+            <h3 className="text-lg font-medium text-slate-700 mb-2">{t.noProjects}</h3>
+            <p className="text-slate-500 mb-6">{t.noProjectsDesc}</p>
             <button
               onClick={handleCreate}
               className="bg-indigo-600 text-white px-6 py-2 rounded-xl font-medium hover:bg-indigo-700 transition-colors"
             >
-              Crear primer proyecto
+              {t.createFirst}
             </button>
           </div>
         ) : (
@@ -224,6 +235,8 @@ export default function DashboardPage() {
                 key={session.id}
                 session={session}
                 onDelete={handleDelete}
+                t={t}
+                lang={lang}
               />
             ))}
           </div>

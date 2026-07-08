@@ -1,5 +1,8 @@
 export type Phase = "exploration" | "structuring" | "generation" | "done";
 
+/** Correo de la dueña del negocio que recibe los leads (propuesta + adjunto). */
+export const OWNER_EMAIL = "nathaliaaguillon@gmail.com";
+
 export interface Message {
   id: string;
   role: "user" | "assistant";

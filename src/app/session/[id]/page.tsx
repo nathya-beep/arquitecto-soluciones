@@ -11,9 +11,12 @@ import {
   SUMMARY_MARKER,
   PROMPT_MASTER_MARKER,
   stripMarkers,
+  OWNER_EMAIL,
 } from "@/lib/types";
 import { getSession, saveSession } from "@/lib/storage";
-import { sendLeadEmail } from "@/lib/leadEmail";
+import { GREETINGS, ALL_GREETINGS, DEFAULT_TITLES } from "@/lib/i18n";
+import { useLang } from "@/components/LangProvider";
+import LangToggle from "@/components/LangToggle";
 import ChatMessage from "@/components/ChatMessage";
 import PhaseIndicator from "@/components/PhaseIndicator";
 import CommercialSummary from "@/components/CommercialSummary";
@@ -32,16 +35,22 @@ function detectPhase(content: string, currentPhase: Phase): Phase {
   if (content.includes(PROMPT_MASTER_MARKER)) return "done";
   if (currentPhase === "exploration" && content.includes(SUMMARY_MARKER)) return "structuring";
 
-  // Fallback heurístico por si el modelo omite el marcador.
+  // Fallback heurístico por si el modelo omite el marcador (ES + EN).
   if (
     (currentPhase === "structuring" || currentPhase === "generation") &&
-    (lower.includes("# contexto del proyecto") || lower.includes("modelo de datos"))
+    (lower.includes("# contexto del proyecto") ||
+      lower.includes("modelo de datos") ||
+      lower.includes("# project context") ||
+      lower.includes("data model"))
   ) return "done";
   if (
     currentPhase === "exploration" &&
     (lower.includes("problema principal") ||
       lower.includes("usuarios y roles") ||
-      lower.includes("esto captura bien"))
+      lower.includes("esto captura bien") ||
+      lower.includes("main problem") ||
+      lower.includes("users and roles") ||
+      lower.includes("does this capture"))
   ) return "structuring";
 
   return currentPhase;
@@ -50,6 +59,7 @@ function detectPhase(content: string, currentPhase: Phase): Phase {
 export default function SessionPage({ params }: SessionPageProps) {
   const { id } = use(params);
   const router = useRouter();
+  const { t, lang } = useLang();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -106,31 +116,31 @@ export default function SessionPage({ params }: SessionPageProps) {
     const greetingMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
-      content: "Hola, estoy listo para comenzar.",
+      content: GREETINGS[lang],
       createdAt: new Date().toISOString(),
     };
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: greetingMsg.content }] }),
+        body: JSON.stringify({ messages: [{ role: "user", content: greetingMsg.content }], phase: "exploration", lang }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Error al contactar la IA"); setInitialized(true); return; }
+      if (!res.ok) { setError(data.error ?? t.errAI); setInitialized(true); return; }
       const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: stripMarkers(data.content), createdAt: new Date().toISOString() };
       updateSession({ ...s, messages: [greetingMsg, assistantMsg], updatedAt: new Date().toISOString() });
-    } catch { setError("Error de conexión."); }
+    } catch { setError(t.errConnection); }
     finally { setSending(false); setInitialized(true); }
   };
 
   const generateCommercialAndSendEmail = async (s: Session) => {
     setGeneratingCommercial(true);
     try {
-      // Generate commercial summary
+      // Generar el resumen comercial (en el idioma actual).
       const summaryRes = await fetch("/api/commercial-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title }),
+        body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title, lang }),
       });
       const summaryData = await summaryRes.json();
       const commercial: CommercialSummaryType = summaryData.summary;
@@ -138,13 +148,25 @@ export default function SessionPage({ params }: SessionPageProps) {
       const withSummary: Session = { ...s, commercialSummary: commercial, updatedAt: new Date().toISOString() };
       updateSession(withSummary);
 
-      // Enviar el email DESDE EL NAVEGADOR (Web3Forms bloquea IPs de servidor).
-      const sent = await sendLeadEmail({
-        projectTitle: s.title,
-        contact: s.contact,
-        commercialSummary: commercial,
-        finalPrompt: s.finalPrompt ?? "",
-      });
+      // Enviar el lead a la dueña (propuesta + adjunto .md) vía Resend server-side.
+      let sent = false;
+      try {
+        const emailRes = await fetch("/api/send-email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            projectTitle: s.title,
+            contact: s.contact,
+            commercialSummary: commercial,
+            finalPrompt: s.finalPrompt ?? "",
+            lang,
+          }),
+        });
+        const emailData = await emailRes.json().catch(() => ({}));
+        sent = emailRes.ok && emailData.ok === true;
+      } catch {
+        sent = false;
+      }
 
       updateSession({ ...withSummary, emailSent: sent, updatedAt: new Date().toISOString() });
     } catch { /* keep going */ }
@@ -166,10 +188,10 @@ export default function SessionPage({ params }: SessionPageProps) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })), phase: optimistic.phase }),
+        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })), phase: optimistic.phase, lang }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? "Error"); setInputValue(userContent); updateSession(session); return; }
+      if (!res.ok) { setError(data.error ?? t.errGeneric); setInputValue(userContent); updateSession(session); return; }
 
       // Detectar fase con el contenido CRUDO (con marcadores); mostrar/guardar LIMPIO.
       const newPhase = detectPhase(data.content, optimistic.phase);
@@ -179,7 +201,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: cleanContent, createdAt: new Date().toISOString() };
 
       let title = optimistic.title;
-      if (title === "Nueva sesión" && session.messages.length <= 2) {
+      if (DEFAULT_TITLES.includes(title) && session.messages.length <= 2) {
         title = userContent.split(" ").slice(0, 7).join(" ");
       }
 
@@ -191,7 +213,7 @@ export default function SessionPage({ params }: SessionPageProps) {
         finalPrompt: isFinalPrompt ? cleanContent : optimistic.finalPrompt,
         updatedAt: new Date().toISOString(),
       });
-    } catch { setError("Error de conexión. Intenta de nuevo."); setInputValue(userContent); updateSession(session); }
+    } catch { setError(t.errConnectionRetry); setInputValue(userContent); updateSession(session); }
     finally { setSending(false); }
   };
 
@@ -210,7 +232,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
           <div className="w-8 h-8 border-2 border-indigo-600 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-          <p className="text-slate-500 text-sm">Iniciando sesión...</p>
+          <p className="text-slate-500 text-sm">{t.loading}</p>
         </div>
       </div>
     );
@@ -223,7 +245,7 @@ export default function SessionPage({ params }: SessionPageProps) {
 
   const visibleMessages = session.messages.filter(
     m =>
-      !(m.role === "user" && m.content === "Hola, estoy listo para comenzar.") &&
+      !(m.role === "user" && ALL_GREETINGS.includes(m.content)) &&
       // Ocultamos el mensaje del Prompt Master del chat: se muestra en su tarjeta.
       !(m.role === "assistant" && session.phase === "done" && m.content === session.finalPrompt)
   );
@@ -241,7 +263,10 @@ export default function SessionPage({ params }: SessionPageProps) {
             </Link>
             <h1 className="font-medium text-slate-800 truncate text-sm sm:text-base">{session.title}</h1>
           </div>
-          <PhaseIndicator currentPhase={session.phase} />
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <PhaseIndicator currentPhase={session.phase} t={t} />
+            <LangToggle />
+          </div>
         </div>
       </header>
 
@@ -278,7 +303,7 @@ export default function SessionPage({ params }: SessionPageProps) {
           {session.phase === "done" && (
             <CommercialSummary
               summary={session.commercialSummary ?? {
-                headline: "Generando tu propuesta comercial...",
+                headline: t.csSending,
                 problem: "",
                 benefits: [],
                 howItWorks: [],
@@ -288,6 +313,7 @@ export default function SessionPage({ params }: SessionPageProps) {
               projectTitle={session.title}
               emailSent={session.emailSent}
               loading={generatingCommercial || !session.commercialSummary}
+              ownerEmail={OWNER_EMAIL}
             />
           )}
 
@@ -308,7 +334,7 @@ export default function SessionPage({ params }: SessionPageProps) {
                 value={inputValue}
                 onChange={handleTextareaChange}
                 onKeyDown={handleKeyDown}
-                placeholder="Escribe tu respuesta... (Enter para enviar)"
+                placeholder={t.inputPlaceholder}
                 rows={1}
                 disabled={sending}
                 className="flex-1 resize-none border border-slate-200 rounded-xl px-4 py-3 text-sm text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent disabled:opacity-50 disabled:bg-slate-50"
@@ -328,7 +354,7 @@ export default function SessionPage({ params }: SessionPageProps) {
                 )}
               </button>
             </div>
-            <p className="text-xs text-slate-400 mt-2 text-center">Enter para enviar · Shift+Enter para nueva línea</p>
+            <p className="text-xs text-slate-400 mt-2 text-center">{t.inputHint}</p>
           </div>
         </div>
       )}
