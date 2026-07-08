@@ -43,10 +43,10 @@ Edita `.env.local` (y en Vercel, **Settings > Environment Variables**):
 GROQ_API_KEY=gsk_tu_key_real_aqui
 RESEND_API_KEY=re_tu_key_real_aqui
 
-# Calidad de la IA. "max" (por defecto) = 70b en todo (mejor calidad, pero en
-# plan gratis agota el límite diario del 70b en 1-2 entrevistas → usar con Groq
-# Dev Tier). "balanced" = entrevista con 8b y Prompt Master con 70b (plan gratis).
-AI_QUALITY_MODE=max
+# Calidad de la IA. "balanced" (por defecto) = entrevista con 8b y Prompt Master
+# con 70b (plan gratis). "max" = 70b en todo (mejor calidad, requiere Groq Dev
+# Tier de pago porque en plan gratis agota el límite diario del 70b).
+AI_QUALITY_MODE=balanced
 
 # Opcional. Remitente para el correo a la dueña (por defecto onboarding@resend.dev).
 # Cámbialo solo si verificaste un dominio.

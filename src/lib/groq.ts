@@ -12,17 +12,20 @@ const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
 /**
  * Modo de calidad de la IA (variable de entorno AI_QUALITY_MODE):
- * - "max" (por defecto): usa el 70b en TODA la entrevista y el Prompt Master.
- *   Máxima calidad. En plan gratis agota el límite diario del 70b rápido, así que
- *   conviene con Groq Dev Tier (de pago).
- * - "balanced": entrevista con 8b (rápido, presupuesto diario grande) y solo el
- *   Prompt Master con 70b. Pensado para el plan gratis.
+ * - "balanced" (por defecto): entrevista con 8b (rápido, presupuesto diario
+ *   grande) y solo el Prompt Master con 70b. Pensado para el plan GRATIS de Groq.
+ * - "max": usa el 70b en TODA la entrevista y el Prompt Master. Máxima calidad,
+ *   pero agota el límite diario del 70b en el plan gratis → requiere Groq Dev
+ *   Tier (de pago). Para activarlo: AI_QUALITY_MODE=max.
+ *
+ * Default = "balanced" porque el Dev Tier de Groq está temporalmente
+ * deshabilitado (2026-07); cambiar a "max" cuando se pueda activar el pago.
  */
 export type QualityMode = "max" | "balanced";
 export function getQualityMode(): QualityMode {
-  return (process.env.AI_QUALITY_MODE ?? "").trim().toLowerCase() === "balanced"
-    ? "balanced"
-    : "max";
+  return (process.env.AI_QUALITY_MODE ?? "").trim().toLowerCase() === "max"
+    ? "max"
+    : "balanced";
 }
 
 export interface GroqMessage {
