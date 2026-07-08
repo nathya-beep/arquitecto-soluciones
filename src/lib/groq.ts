@@ -10,6 +10,21 @@ export const GROQ_MODEL_FAST = "llama-3.1-8b-instant";
 
 const GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions";
 
+/**
+ * Modo de calidad de la IA (variable de entorno AI_QUALITY_MODE):
+ * - "max" (por defecto): usa el 70b en TODA la entrevista y el Prompt Master.
+ *   Máxima calidad. En plan gratis agota el límite diario del 70b rápido, así que
+ *   conviene con Groq Dev Tier (de pago).
+ * - "balanced": entrevista con 8b (rápido, presupuesto diario grande) y solo el
+ *   Prompt Master con 70b. Pensado para el plan gratis.
+ */
+export type QualityMode = "max" | "balanced";
+export function getQualityMode(): QualityMode {
+  return (process.env.AI_QUALITY_MODE ?? "").trim().toLowerCase() === "balanced"
+    ? "balanced"
+    : "max";
+}
+
 export interface GroqMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -23,6 +38,10 @@ export interface GroqResult {
   error?: string;
   /** Código HTTP sugerido para responder al cliente */
   status?: number;
+  /** Razón de finalización de Groq ("stop", "length", ...). */
+  finishReason?: string;
+  /** true si la respuesta quedó cortada por el límite de tokens (aun tras continuar). */
+  truncated?: boolean;
 }
 
 /** Lee la API key limpiando BOM y espacios que a veces se cuelan al pegarla. */
@@ -38,10 +57,19 @@ interface CallGroqOptions {
   model?: string;
   /** Idioma de los mensajes de error hacia el usuario. */
   lang?: Lang;
+  /**
+   * Si la respuesta se corta por límite de tokens (finish_reason "length"),
+   * pide continuaciones y las concatena. Úsalo para entregables largos como el
+   * Prompt Master, para que nunca lleguen cortados.
+   */
+  completeIfTruncated?: boolean;
 }
 
+/** Máximo de continuaciones cuando la respuesta se trunca. */
+const MAX_CONTINUATIONS = 4;
+
 /** Parsea headers de Groq tipo "1m26.4s", "235ms" o "6.5s" a milisegundos. */
-function parseResetMs(value: string | null): number | null {
+export function parseResetMs(value: string | null): number | null {
   if (!value) return null;
   let ms = 0;
   const m = value.match(/(\d+(?:\.\d+)?)m(?!s)/); // minutos (no "ms")
@@ -92,24 +120,21 @@ function rateLimitMessage(waitMs: number | null, lang: Lang): string {
  * Nunca lanza: siempre devuelve un GroqResult que la route handler puede
  * traducir a NextResponse.
  */
-export async function callGroq({
-  messages,
-  maxTokens = 4096,
-  temperature = 0.7,
-  model = GROQ_MODEL,
-  lang = "es",
-}: CallGroqOptions): Promise<GroqResult> {
+// Espera máxima que aceptamos reintentar DENTRO del request. Vercel corta las
+// funciones serverless a los ~10s, así que si el reset es mayor devolvemos el
+// error para que el cliente reintente.
+const MAX_RETRY_WAIT_MS = 4000;
+
+/** Una sola petición a Groq, con reintento transparente ante un 429 corto. */
+async function singleRequest(
+  apiKey: string,
+  model: string,
+  messages: GroqMessage[],
+  maxTokens: number,
+  temperature: number,
+  lang: Lang
+): Promise<GroqResult> {
   const e = ERR[lang];
-  const apiKey = getGroqApiKey();
-  if (!apiKey) {
-    return { ok: false, error: e.noKey, status: 503 };
-  }
-
-  // Espera máxima que aceptamos reintentar dentro del request. Vercel corta las
-  // funciones serverless a los ~10s, así que si el reset es mayor devolvemos el
-  // error para que el cliente reintente.
-  const MAX_RETRY_WAIT_MS = 4000;
-
   try {
     for (let attempt = 0; attempt < 2; attempt++) {
       const response = await fetch(GROQ_ENDPOINT, {
@@ -118,26 +143,23 @@ export async function callGroq({
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: maxTokens,
-          temperature,
-        }),
+        body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        const content: string = data?.choices?.[0]?.message?.content ?? "";
-        return { ok: true, content };
+        const choice = data?.choices?.[0];
+        return {
+          ok: true,
+          content: choice?.message?.content ?? "",
+          finishReason: choice?.finish_reason,
+        };
       }
 
       const errText = await response.text().catch(() => "");
       console.error("Groq error:", response.status, errText);
 
-      if (response.status === 401) {
-        return { ok: false, error: e.invalidKey, status: 502 };
-      }
+      if (response.status === 401) return { ok: false, error: e.invalidKey, status: 502 };
 
       if (response.status === 429) {
         // El header solo refleja el límite por minuto. El bloqueo real (p. ej.
@@ -148,22 +170,66 @@ export async function callGroq({
           parseResetMs(response.headers.get("retry-after"));
         const waitMs = bodyWaitMs ?? headerWaitMs;
 
-        // Espera corta → reintentamos una vez de forma transparente.
         if (attempt === 0 && waitMs !== null && waitMs <= MAX_RETRY_WAIT_MS) {
           await sleep(waitMs + 250);
           continue;
         }
-        // Espera larga → mensaje honesto con la duración aproximada.
         return { ok: false, error: rateLimitMessage(waitMs, lang), status: 429 };
       }
 
       return { ok: false, error: e.aiError, status: 502 };
     }
-
-    // Se agotaron los intentos (el reintento tras 429 también falló).
     return { ok: false, error: rateLimitMessage(null, lang), status: 429 };
   } catch (err) {
     console.error("Groq fetch error:", err);
     return { ok: false, error: e.connError, status: 502 };
   }
+}
+
+/**
+ * Llama a Groq y normaliza la respuesta/errores.
+ * Nunca lanza: siempre devuelve un GroqResult que la route handler puede
+ * traducir a NextResponse. Si completeIfTruncated está activo y la respuesta se
+ * corta por tokens, pide continuaciones y las concatena.
+ */
+export async function callGroq({
+  messages,
+  maxTokens = 4096,
+  temperature = 0.7,
+  model = GROQ_MODEL,
+  lang = "es",
+  completeIfTruncated = false,
+}: CallGroqOptions): Promise<GroqResult> {
+  const e = ERR[lang];
+  const apiKey = getGroqApiKey();
+  if (!apiKey) return { ok: false, error: e.noKey, status: 503 };
+
+  const first = await singleRequest(apiKey, model, messages, maxTokens, temperature, lang);
+  if (!first.ok) return first;
+
+  let content = first.content ?? "";
+  let finishReason = first.finishReason;
+
+  // Continuar mientras se corte por longitud (evita entregables truncados).
+  if (completeIfTruncated) {
+    const convo = [...messages];
+    let lastChunk = content;
+    let n = 0;
+    while (finishReason === "length" && n < MAX_CONTINUATIONS) {
+      convo.push({ role: "assistant", content: lastChunk });
+      convo.push({
+        role: "user",
+        content:
+          "Continue the previous message EXACTLY from where you stopped. Do not repeat anything already written, do not add a preamble, just keep going.",
+      });
+      const next = await singleRequest(apiKey, model, convo, maxTokens, temperature, lang);
+      if (!next.ok) break; // devolvemos lo acumulado hasta aquí
+      lastChunk = next.content ?? "";
+      content += lastChunk;
+      finishReason = next.finishReason;
+      n++;
+    }
+  }
+
+  return { ok: true, content, finishReason, truncated: finishReason === "length" };
 }

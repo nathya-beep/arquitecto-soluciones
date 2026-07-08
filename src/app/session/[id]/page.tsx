@@ -35,22 +35,40 @@ function detectPhase(content: string, currentPhase: Phase): Phase {
   if (content.includes(PROMPT_MASTER_MARKER)) return "done";
   if (currentPhase === "exploration" && content.includes(SUMMARY_MARKER)) return "structuring";
 
-  // Fallback heurístico por si el modelo omite el marcador (ES + EN).
+  // Fallback estructural por si el modelo omite el marcador (ES + EN).
+  // El Prompt Master es un doc técnico con varias secciones de spec.
+  const specSignals = [
+    "modelo de datos",
+    "data model",
+    "criterios de aceptación",
+    "acceptance criteria",
+    "# contexto del proyecto",
+    "# project context",
+    "stack recomendado",
+    "recommended stack",
+    "reglas de negocio",
+    "business rules",
+  ];
+  const specHits = specSignals.filter((s) => lower.includes(s)).length;
   if (
     (currentPhase === "structuring" || currentPhase === "generation") &&
-    (lower.includes("# contexto del proyecto") ||
-      lower.includes("modelo de datos") ||
-      lower.includes("# project context") ||
-      lower.includes("data model"))
+    specHits >= 2
   ) return "done";
+
+  // El resumen de Fase 2 lista secciones tipo "problema principal / usuarios y roles".
+  const summarySignals = [
+    "problema principal",
+    "usuarios y roles",
+    "esto captura bien",
+    "main problem",
+    "users and roles",
+    "does this capture",
+    "preguntas pendientes",
+    "open questions",
+  ];
   if (
     currentPhase === "exploration" &&
-    (lower.includes("problema principal") ||
-      lower.includes("usuarios y roles") ||
-      lower.includes("esto captura bien") ||
-      lower.includes("main problem") ||
-      lower.includes("users and roles") ||
-      lower.includes("does this capture"))
+    summarySignals.some((s) => lower.includes(s))
   ) return "structuring";
 
   return currentPhase;
@@ -69,13 +87,20 @@ export default function SessionPage({ params }: SessionPageProps) {
   const [error, setError] = useState("");
   const [initialized, setInitialized] = useState(false);
   const [generatingCommercial, setGeneratingCommercial] = useState(false);
+  const [commercialError, setCommercialError] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+
+  // Guards contra doble ejecución (React Strict Mode dispara los efectos 2 veces).
+  const greetedRef = useRef(false);
+  const commercialStartedRef = useRef(false);
 
   useEffect(() => {
     const s = getSession(id);
     if (!s) { router.push("/dashboard"); return; }
     setSession(s);
     // La entrevista solo arranca una vez capturado el contacto del prospecto.
-    if (s.contact && s.messages.length === 0) {
+    if (s.contact && s.messages.length === 0 && !greetedRef.current) {
+      greetedRef.current = true;
       sendGreeting(s);
     } else {
       setInitialized(true);
@@ -87,7 +112,10 @@ export default function SessionPage({ params }: SessionPageProps) {
     const updated: Session = { ...session, contact, updatedAt: new Date().toISOString() };
     updateSession(updated);
     // Solo arrancamos la entrevista si aún no hay mensajes (no pisar una conversación existente).
-    if (updated.messages.length === 0) sendGreeting(updated);
+    if (updated.messages.length === 0 && !greetedRef.current) {
+      greetedRef.current = true;
+      sendGreeting(updated);
+    }
   };
 
   useEffect(() => {
@@ -100,8 +128,9 @@ export default function SessionPage({ params }: SessionPageProps) {
       session?.phase === "done" &&
       session.finalPrompt &&
       !session.commercialSummary &&
-      !generatingCommercial
+      !commercialStartedRef.current
     ) {
+      commercialStartedRef.current = true;
       generateCommercialAndSendEmail(session);
     }
   }, [session?.phase, session?.finalPrompt]);
@@ -133,8 +162,30 @@ export default function SessionPage({ params }: SessionPageProps) {
     finally { setSending(false); setInitialized(true); }
   };
 
+  /** Envía la propuesta (dueña con adjunto + lead) por Resend. Devuelve si llegó a la dueña. */
+  const sendProposalEmail = async (s: Session, commercial: CommercialSummaryType): Promise<boolean> => {
+    try {
+      const emailRes = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectTitle: s.title,
+          contact: s.contact,
+          commercialSummary: commercial,
+          finalPrompt: s.finalPrompt ?? "",
+          lang,
+        }),
+      });
+      const emailData = await emailRes.json().catch(() => ({}));
+      return emailRes.ok && emailData.ok === true;
+    } catch {
+      return false;
+    }
+  };
+
   const generateCommercialAndSendEmail = async (s: Session) => {
     setGeneratingCommercial(true);
+    setCommercialError(false);
     try {
       // Generar el resumen comercial (en el idioma actual).
       const summaryRes = await fetch("/api/commercial-summary", {
@@ -142,47 +193,55 @@ export default function SessionPage({ params }: SessionPageProps) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title, lang }),
       });
-      const summaryData = await summaryRes.json();
-      const commercial: CommercialSummaryType = summaryData.summary;
+      const summaryData = await summaryRes.json().catch(() => ({}));
+      const commercial: CommercialSummaryType | undefined = summaryData?.summary;
+
+      // Si la IA no devolvió resumen (p. ej. 429), no colgar el spinner: mostrar
+      // error + permitir reintentar. NO se guarda un resumen vacío ni se envía email.
+      if (!commercial) {
+        setCommercialError(true);
+        return;
+      }
 
       const withSummary: Session = { ...s, commercialSummary: commercial, updatedAt: new Date().toISOString() };
       updateSession(withSummary);
 
-      // Enviar el lead a la dueña (propuesta + adjunto .md) vía Resend server-side.
-      let sent = false;
-      try {
-        const emailRes = await fetch("/api/send-email", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            projectTitle: s.title,
-            contact: s.contact,
-            commercialSummary: commercial,
-            finalPrompt: s.finalPrompt ?? "",
-            lang,
-          }),
-        });
-        const emailData = await emailRes.json().catch(() => ({}));
-        sent = emailRes.ok && emailData.ok === true;
-      } catch {
-        sent = false;
-      }
-
+      const sent = await sendProposalEmail(s, commercial);
       updateSession({ ...withSummary, emailSent: sent, updatedAt: new Date().toISOString() });
-    } catch { /* keep going */ }
-    finally { setGeneratingCommercial(false); }
+    } catch {
+      setCommercialError(true);
+    } finally {
+      setGeneratingCommercial(false);
+    }
   };
 
-  const sendMessage = async () => {
-    if (!inputValue.trim() || sending || !session || session.phase === "done") return;
-    const userContent = inputValue.trim();
-    setInputValue("");
-    setError("");
+  /** Reintenta la generación de la propuesta tras un fallo. */
+  const retryCommercial = () => {
+    if (!session || generatingCommercial) return;
+    generateCommercialAndSendEmail(session);
+  };
+
+  /** Reenvía la propuesta por email usando el resumen ya generado. */
+  const resendEmail = async () => {
+    if (!session?.commercialSummary || generatingCommercial) return;
+    setGeneratingCommercial(true);
+    try {
+      const sent = await sendProposalEmail(session, session.commercialSummary);
+      updateSession({ ...session, emailSent: sent, updatedAt: new Date().toISOString() });
+    } finally {
+      setGeneratingCommercial(false);
+    }
+  };
+
+  /** Envía un turno del usuario (texto normal o directiva de avance) y procesa la respuesta. */
+  const submitTurn = async (userContent: string, restoreInputOnError = false) => {
+    if (!session || sending || session.phase === "done") return;
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: userContent, createdAt: new Date().toISOString() };
     const optimistic: Session = { ...session, messages: [...session.messages, userMsg], updatedAt: new Date().toISOString() };
     updateSession(optimistic);
     setSending(true);
+    setError("");
 
     try {
       const res = await fetch("/api/chat", {
@@ -191,7 +250,12 @@ export default function SessionPage({ params }: SessionPageProps) {
         body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })), phase: optimistic.phase, lang }),
       });
       const data = await res.json();
-      if (!res.ok) { setError(data.error ?? t.errGeneric); setInputValue(userContent); updateSession(session); return; }
+      if (!res.ok) {
+        setError(data.error ?? t.errGeneric);
+        if (restoreInputOnError) setInputValue(userContent);
+        updateSession(session);
+        return;
+      }
 
       // Detectar fase con el contenido CRUDO (con marcadores); mostrar/guardar LIMPIO.
       const newPhase = detectPhase(data.content, optimistic.phase);
@@ -213,8 +277,81 @@ export default function SessionPage({ params }: SessionPageProps) {
         finalPrompt: isFinalPrompt ? cleanContent : optimistic.finalPrompt,
         updatedAt: new Date().toISOString(),
       });
-    } catch { setError(t.errConnectionRetry); setInputValue(userContent); updateSession(session); }
-    finally { setSending(false); }
+    } catch {
+      setError(t.errConnectionRetry);
+      if (restoreInputOnError) setInputValue(userContent);
+      updateSession(session);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const sendMessage = async () => {
+    if (!inputValue.trim()) return;
+    const userContent = inputValue.trim();
+    setInputValue("");
+    await submitTurn(userContent, true);
+  };
+
+  /**
+   * Fail-safe: fuerza el avance de fase cuando el usuario quiere terminar ya
+   * (evita quedar atrapado si el modelo no emite el marcador).
+   */
+  const forceAdvance = () => {
+    if (!session || sending) return;
+    const directive =
+      session.phase === "structuring"
+        ? lang === "en"
+          ? "I confirm the summary. Please generate the final Prompt Master now."
+          : "Confirmo el resumen. Genera ahora el Prompt Master final."
+        : lang === "en"
+          ? "I've given you enough information. Please generate the structured summary of what you understood now."
+          : "Ya te di suficiente información. Genera ahora el resumen estructurado de lo que entendiste.";
+    submitTurn(directive);
+  };
+
+  /** Regenera el Prompt Master (más completo) y refresca la propuesta. */
+  const regeneratePromptMaster = async () => {
+    if (!session || regenerating || !session.finalPrompt) return;
+    setRegenerating(true);
+    setError("");
+    try {
+      const directive =
+        lang === "en"
+          ? "Regenerate the Prompt Master from scratch, more complete and detailed, fully covering every section. The first line must be exactly [[PROMPT_MASTER]]."
+          : "Regenera el Prompt Master desde cero, más completo y detallado, cubriendo todas las secciones a fondo. La primera línea debe ser exactamente [[PROMPT_MASTER]].";
+      const msgs = [
+        ...session.messages.map(m => ({ role: m.role, content: m.content })),
+        { role: "user", content: directive },
+      ];
+      const res = await fetch("/api/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: msgs, phase: "generation", lang }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? t.errGeneric); return; }
+
+      const clean = stripMarkers(data.content);
+      // Reemplazar el Prompt Master viejo en los mensajes (para que siga oculto del chat).
+      const newMessages = session.messages.map(m =>
+        m.role === "assistant" && m.content === session.finalPrompt ? { ...m, content: clean } : m
+      );
+      commercialStartedRef.current = false; // que el efecto regenere la propuesta
+      setCommercialError(false);
+      updateSession({
+        ...session,
+        messages: newMessages,
+        finalPrompt: clean,
+        commercialSummary: null,
+        emailSent: false,
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      setError(t.errConnectionRetry);
+    } finally {
+      setRegenerating(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -256,7 +393,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       <header className="bg-white border-b border-slate-200 px-4 py-3 flex-shrink-0">
         <div className="max-w-3xl mx-auto flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            <Link href="/dashboard" className="text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0">
+            <Link href="/dashboard" aria-label={t.home} className="text-slate-400 hover:text-slate-600 transition-colors flex-shrink-0">
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
               </svg>
@@ -296,25 +433,56 @@ export default function SessionPage({ params }: SessionPageProps) {
 
           {/* Prompt Master — entregable descargable */}
           {session.phase === "done" && session.finalPrompt && (
-            <PromptMasterCard finalPrompt={session.finalPrompt} projectTitle={session.title} />
+            <PromptMasterCard
+              finalPrompt={session.finalPrompt}
+              projectTitle={session.title}
+              onRegenerate={regeneratePromptMaster}
+              regenerating={regenerating}
+            />
           )}
 
-          {/* Commercial Summary — aparece cuando la entrevista termina */}
+          {/* Propuesta comercial — aparece cuando la entrevista termina */}
           {session.phase === "done" && (
-            <CommercialSummary
-              summary={session.commercialSummary ?? {
-                headline: t.csSending,
-                problem: "",
-                benefits: [],
-                howItWorks: [],
-                roiEstimate: "",
-                callToAction: "",
-              }}
-              projectTitle={session.title}
-              emailSent={session.emailSent}
-              loading={generatingCommercial || !session.commercialSummary}
-              ownerEmail={OWNER_EMAIL}
-            />
+            commercialError && !session.commercialSummary ? (
+              <div className="mt-6 rounded-2xl border border-red-200 bg-red-50 p-5 text-center">
+                <p className="text-sm text-red-700 mb-3">{t.proposalError}</p>
+                <button
+                  onClick={retryCommercial}
+                  disabled={generatingCommercial}
+                  className="bg-indigo-600 text-white px-4 py-2 rounded-xl text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  {t.retry}
+                </button>
+              </div>
+            ) : (
+              <>
+                <CommercialSummary
+                  summary={session.commercialSummary ?? {
+                    headline: t.csSending,
+                    problem: "",
+                    benefits: [],
+                    howItWorks: [],
+                    roiEstimate: "",
+                    callToAction: "",
+                  }}
+                  projectTitle={session.title}
+                  emailSent={session.emailSent}
+                  loading={generatingCommercial || !session.commercialSummary}
+                  ownerEmail={OWNER_EMAIL}
+                />
+                {/* Reenviar si el email no llegó */}
+                {session.commercialSummary && !session.emailSent && !generatingCommercial && (
+                  <div className="mt-3 text-center">
+                    <button
+                      onClick={resendEmail}
+                      className="text-sm text-indigo-600 hover:text-indigo-800 font-medium underline underline-offset-2"
+                    >
+                      {t.resendProposal}
+                    </button>
+                  </div>
+                )}
+              </>
+            )
           )}
 
           <div ref={messagesEndRef} />
@@ -343,6 +511,7 @@ export default function SessionPage({ params }: SessionPageProps) {
               <button
                 onClick={sendMessage}
                 disabled={sending || !inputValue.trim()}
+                aria-label={t.inputPlaceholder}
                 className="flex-shrink-0 w-11 h-11 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center"
               >
                 {sending ? (
@@ -354,7 +523,20 @@ export default function SessionPage({ params }: SessionPageProps) {
                 )}
               </button>
             </div>
-            <p className="text-xs text-slate-400 mt-2 text-center">{t.inputHint}</p>
+            <div className="flex items-center justify-between gap-2 mt-2">
+              <p className="text-xs text-slate-400">{t.inputHint}</p>
+              {/* Fail-safe: avanzar/terminar cuando el usuario ya dio suficiente info */}
+              {(session.phase === "structuring" ||
+                (session.phase === "exploration" && visibleMessages.length >= 4)) &&
+                !sending && (
+                  <button
+                    onClick={forceAdvance}
+                    className="text-xs text-indigo-600 hover:text-indigo-800 font-medium whitespace-nowrap"
+                  >
+                    {t.finishNow}
+                  </button>
+                )}
+            </div>
           </div>
         </div>
       )}

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { CommercialSummary } from "@/lib/types";
-import { callGroq, GROQ_MODEL_FAST } from "@/lib/groq";
+import { callGroq, GROQ_MODEL, GROQ_MODEL_FAST, getQualityMode } from "@/lib/groq";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
@@ -62,6 +63,11 @@ const FALLBACK_SUMMARY_EN: CommercialSummary = {
 };
 
 export async function POST(request: NextRequest) {
+  const limited = rateLimit(`summary:${clientIp(request)}`, 15, 60_000);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Demasiadas solicitudes. Espera un momento." }, { status: 429 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -87,8 +93,9 @@ export async function POST(request: NextRequest) {
     ],
     maxTokens: 1024,
     temperature: 0.5,
-    // Modelo rápido: reserva el presupuesto diario del 70b para el Prompt Master.
-    model: GROQ_MODEL_FAST,
+    // En modo "max" usa el 70b (mejor copy comercial); en "balanced" el 8b para
+    // reservar el presupuesto diario del 70b al Prompt Master.
+    model: getQualityMode() === "max" ? GROQ_MODEL : GROQ_MODEL_FAST,
     lang: parsed.data.lang,
   });
 

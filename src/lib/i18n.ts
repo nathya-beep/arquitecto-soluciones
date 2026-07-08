@@ -80,6 +80,13 @@ export interface Dict {
   pmCopied: string;
   pmView: string;
   pmHide: string;
+  pmRegenerate: string;
+  pmRegenerating: string;
+  // Session actions / fail-safes
+  finishNow: string;
+  proposalError: string;
+  retry: string;
+  resendProposal: string;
   // Commercial summary
   csBadge: string;
   csProblem: string;
@@ -160,6 +167,12 @@ const es: Dict = {
   pmCopied: "Copiado",
   pmView: "Ver contenido",
   pmHide: "Ocultar",
+  pmRegenerate: "Regenerar",
+  pmRegenerating: "Regenerando...",
+  finishNow: "Ya tengo suficiente → generar mi propuesta",
+  proposalError: "No se pudo generar la propuesta. Revisa tu conexión o el límite de la IA.",
+  retry: "Reintentar",
+  resendProposal: "Reenviar propuesta",
   csBadge: "Propuesta de Automatización",
   csProblem: "El Problema",
   csBenefits: "Beneficios Clave",
@@ -239,6 +252,12 @@ const en: Dict = {
   pmCopied: "Copied",
   pmView: "View content",
   pmHide: "Hide",
+  pmRegenerate: "Regenerate",
+  pmRegenerating: "Regenerating...",
+  finishNow: "I have enough → generate my proposal",
+  proposalError: "Couldn't generate the proposal. Check your connection or the AI limit.",
+  retry: "Retry",
+  resendProposal: "Resend proposal",
   csBadge: "Automation Proposal",
   csProblem: "The Problem",
   csBenefits: "Key Benefits",

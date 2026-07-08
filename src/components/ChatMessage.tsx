@@ -26,6 +26,16 @@ export default function ChatMessage({ message }: ChatMessageProps) {
         if (line.startsWith("### ")) {
           return <h3 key={i} className="text-sm font-semibold mt-2 mb-1">{line.slice(4)}</h3>;
         }
+        // Casillas de checklist ANTES que las viñetas (empiezan con "- [ ] ").
+        if (line.startsWith("- [ ] ") || line.startsWith("- [x] ") || line.startsWith("- [X] ")) {
+          const checked = /^- \[[xX]\] /.test(line);
+          return (
+            <li key={i} className="ml-4 flex items-start gap-2 list-none">
+              <input type="checkbox" checked={checked} disabled readOnly className="mt-1" />
+              <span>{formatInline(line.slice(6))}</span>
+            </li>
+          );
+        }
         if (line.startsWith("- ") || line.startsWith("* ")) {
           return (
             <li key={i} className="ml-4 list-disc">
@@ -37,14 +47,6 @@ export default function ChatMessage({ message }: ChatMessageProps) {
           return (
             <li key={i} className="ml-4 list-decimal">
               {formatInline(line.replace(/^\d+\. /, ""))}
-            </li>
-          );
-        }
-        if (line.startsWith("- [ ] ")) {
-          return (
-            <li key={i} className="ml-4 flex items-start gap-2">
-              <input type="checkbox" disabled className="mt-0.5" />
-              <span>{formatInline(line.slice(6))}</span>
             </li>
           );
         }

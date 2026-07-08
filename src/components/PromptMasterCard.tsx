@@ -6,6 +6,8 @@ import { useLang } from "./LangProvider";
 interface Props {
   finalPrompt: string;
   projectTitle: string;
+  onRegenerate?: () => void;
+  regenerating?: boolean;
 }
 
 function slugify(text: string): string {
@@ -19,7 +21,7 @@ function slugify(text: string): string {
   return slug || "proyecto";
 }
 
-export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
+export default function PromptMasterCard({ finalPrompt, projectTitle, onRegenerate, regenerating }: Props) {
   const { t } = useLang();
   const [copied, setCopied] = useState(false);
   const [open, setOpen] = useState(false);
@@ -92,6 +94,22 @@ export default function PromptMasterCard({ finalPrompt, projectTitle }: Props) {
             </>
           )}
         </button>
+        {onRegenerate && (
+          <button
+            onClick={onRegenerate}
+            disabled={regenerating}
+            className="flex items-center gap-2 text-slate-600 px-3 py-2 rounded-xl text-sm font-medium hover:bg-slate-100 disabled:opacity-50 transition-colors"
+          >
+            {regenerating ? (
+              <div className="w-4 h-4 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+            )}
+            {regenerating ? t.pmRegenerating : t.pmRegenerate}
+          </button>
+        )}
         <button
           onClick={() => setOpen((v) => !v)}
           className="flex items-center gap-2 text-slate-500 px-3 py-2 rounded-xl text-sm font-medium hover:bg-slate-100 transition-colors ml-auto"

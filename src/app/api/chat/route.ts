@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { SYSTEM_PROMPT } from "@/lib/types";
-import { callGroq, GROQ_MODEL, GROQ_MODEL_FAST } from "@/lib/groq";
+import { callGroq, GROQ_MODEL, GROQ_MODEL_FAST, getQualityMode, QualityMode } from "@/lib/groq";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 
 const RequestSchema = z.object({
   messages: z.array(
@@ -35,34 +36,40 @@ function systemPromptFor(lang?: string): string {
 }
 
 /**
- * Groq cuenta `max_tokens` como RESERVA contra el límite de tokens/minuto en
- * cada request. Reservar 4096 en cada turno de una entrevista (respuestas de
- * 2-3 frases) agota el presupuesto en 2-3 mensajes y devuelve 429.
- * Solo la generación del Prompt Master necesita una salida grande.
+ * Groq cuenta `max_tokens` como RESERVA contra el límite de tokens/minuto.
+ * Los turnos de entrevista son cortos; la generación (structuring/generation)
+ * puede ser el Prompt Master, que es largo → reserva amplia + continuación.
  */
 function maxTokensForPhase(phase?: string): number {
   switch (phase) {
     case "exploration":
-      return 1536; // preguntas cortas y el resumen [[RESUMEN]]; holgura para el TPM del 8b
+      return 1536; // preguntas cortas y el resumen (si se corta, se continúa)
     case "structuring":
     case "generation":
-      return 4096; // el siguiente turno puede ser el Prompt Master
+      return 8192; // Prompt Master completo (+ continuación anti-truncación)
     default:
       return 4096;
   }
 }
 
 /**
- * Los turnos de entrevista (exploración) usan el modelo rápido para no gastar
- * el presupuesto diario del modelo potente, que se reserva para el Prompt Master.
- * A partir de "structuring" el siguiente turno puede ser el entregable final,
- * así que se usa el modelo potente.
+ * Selección de modelo:
+ * - modo "max": SIEMPRE el 70b (máxima calidad en entrevista y entregable).
+ * - modo "balanced": entrevista (exploración) con el 8b para no gastar el
+ *   presupuesto diario del 70b, que se reserva para el Prompt Master.
  */
-function modelForPhase(phase?: string): string {
+function modelForPhase(phase: string | undefined, mode: QualityMode): string {
+  if (mode === "max") return GROQ_MODEL;
   return phase === "exploration" ? GROQ_MODEL_FAST : GROQ_MODEL;
 }
 
 export async function POST(request: NextRequest) {
+  // Rate limiting por IP para no exponer el presupuesto de Groq a abuso.
+  const limited = rateLimit(`chat:${clientIp(request)}`, 40, 60_000);
+  if (!limited.ok) {
+    return NextResponse.json({ error: "Demasiadas solicitudes. Espera un momento." }, { status: 429 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
@@ -75,6 +82,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Datos inválidos" }, { status: 400 });
   }
 
+  const mode = getQualityMode();
   const result = await callGroq({
     messages: [
       { role: "system", content: systemPromptFor(parsed.data.lang) },
@@ -82,8 +90,10 @@ export async function POST(request: NextRequest) {
     ],
     maxTokens: maxTokensForPhase(parsed.data.phase),
     temperature: 0.7,
-    model: modelForPhase(parsed.data.phase),
+    model: modelForPhase(parsed.data.phase, mode),
     lang: parsed.data.lang,
+    // Nunca truncar entregables: si la respuesta se corta, se continúa.
+    completeIfTruncated: true,
   });
 
   if (!result.ok) {

@@ -1,27 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { CommercialSummary, OWNER_EMAIL } from "@/lib/types";
+import { rateLimit, clientIp } from "@/lib/rateLimit";
 
+// Límites de tamaño para evitar payloads abusivos hacia el envío de correo.
 const RequestSchema = z.object({
-  projectTitle: z.string(),
+  projectTitle: z.string().max(300),
   contact: z
     .object({
-      name: z.string(),
-      email: z.string(),
-      whatsapp: z.string(),
-      company: z.string(),
+      name: z.string().max(200),
+      email: z.string().max(200),
+      whatsapp: z.string().max(60),
+      company: z.string().max(200),
     })
     .nullable()
     .optional(),
   commercialSummary: z.object({
-    headline: z.string(),
-    problem: z.string(),
-    benefits: z.array(z.string()),
-    howItWorks: z.array(z.string()),
-    roiEstimate: z.string(),
-    callToAction: z.string(),
+    headline: z.string().max(500),
+    problem: z.string().max(3000),
+    benefits: z.array(z.string().max(500)).max(20),
+    howItWorks: z.array(z.string().max(500)).max(20),
+    roiEstimate: z.string().max(2000),
+    callToAction: z.string().max(1000),
   }),
-  finalPrompt: z.string(),
+  finalPrompt: z.string().max(60_000),
   lang: z.enum(["es", "en"]).optional(),
 });
 
@@ -87,7 +89,12 @@ const STR: Record<Lang, Record<string, string>> = {
 };
 
 function escapeHtml(text: string): string {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function slugify(text: string): string {
@@ -178,6 +185,22 @@ async function sendViaResend(apiKey: string, payload: ResendPayload): Promise<{ 
 }
 
 export async function POST(request: NextRequest) {
+  // Rate limiting ESTRICTO: este endpoint envía correos. Límite bajo por IP para
+  // evitar que se use como relay de spam (sobre todo cuando RESEND_LEAD_FROM
+  // está activo y se envía al email del lead). Máx 6 por hora.
+  const ip = clientIp(request);
+  const limited = rateLimit(`email:${ip}`, 6, 60 * 60_000);
+  if (!limited.ok) {
+    return NextResponse.json({ ok: false, error: "Demasiados envíos. Intenta más tarde." }, { status: 429 });
+  }
+
+  // Solo aceptamos peticiones del propio sitio (bloquea curl/relay ingenuo).
+  const origin = request.headers.get("origin");
+  const host = request.headers.get("host");
+  if (origin && host && !origin.endsWith(host)) {
+    return NextResponse.json({ ok: false, error: "Origen no permitido." }, { status: 403 });
+  }
+
   let body: unknown;
   try {
     body = await request.json();
