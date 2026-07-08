@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { CommercialSummary } from "@/lib/types";
-import { callGroq } from "@/lib/groq";
+import { callGroq, GROQ_MODEL_FAST } from "@/lib/groq";
 
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
@@ -62,6 +62,8 @@ export async function POST(request: NextRequest) {
     ],
     maxTokens: 1024,
     temperature: 0.5,
+    // Modelo rápido: reserva el presupuesto diario del 70b para el Prompt Master.
+    model: GROQ_MODEL_FAST,
   });
 
   if (!result.ok) {

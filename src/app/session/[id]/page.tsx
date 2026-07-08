@@ -166,7 +166,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })) }),
+        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })), phase: optimistic.phase }),
       });
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? "Error"); setInputValue(userContent); updateSession(session); return; }
