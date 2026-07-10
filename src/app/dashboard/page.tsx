@@ -158,7 +158,7 @@ export default function DashboardPage() {
 
   const handleCreate = () => {
     setCreating(true);
-    const session = createSession(t.newSessionTitle);
+    const session = createSession(t.newSessionTitle, lang);
     router.push(`/session/${session.id}`);
   };
 

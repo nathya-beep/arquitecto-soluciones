@@ -36,9 +36,10 @@ type Lang = "es" | "en";
 // el correo OWNER_EMAIL en Resend).
 const RESEND_FROM =
   (process.env.RESEND_FROM ?? "").trim() || "Arquitecto de Soluciones <onboarding@resend.dev>";
-// Remitente para el correo al LEAD (su propio email). Requiere un DOMINIO
-// VERIFICADO en Resend (ej: "Propuestas <propuestas@tudominio.com>"). Si está
-// vacío, NO se envía correo al lead (queda desactivado hasta tener dominio).
+// Remitente para el correo al LEAD (su propio email). Idealmente un DOMINIO
+// VERIFICADO en Resend (ej: "Propuestas <propuestas@tudominio.com>") para poder
+// entregar a CUALQUIER prospecto. Si está vacío, se usa RESEND_FROM como remitente
+// (con onboarding@resend.dev Resend solo entrega a la dirección dueña de la cuenta).
 const RESEND_LEAD_FROM = (process.env.RESEND_LEAD_FROM ?? "").trim();
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -238,14 +239,21 @@ export async function POST(request: NextRequest) {
     attachments: [attachment],
   });
 
-  // 2) Correo al LEAD (solo propuesta) — solo si hay dominio verificado configurado.
+  // 2) Correo al LEAD (solo la propuesta, sin datos internos ni adjunto), en el
+  // idioma de la encuesta. Se envía siempre que el lead dejó un email válido.
+  // Usa el remitente de dominio verificado si existe; si no, cae a RESEND_FROM.
+  // NOTA: para entregar a prospectos arbitrarios hace falta un DOMINIO VERIFICADO
+  // en Resend + RESEND_LEAD_FROM; con onboarding@resend.dev Resend solo entrega a
+  // la dirección dueña de la cuenta (modo prueba) y el resto fallará (leadSent=false).
   let leadSent = false;
-  if (RESEND_LEAD_FROM && replyTo) {
+  if (replyTo) {
     const lead = await sendViaResend(apiKey, {
-      from: RESEND_LEAD_FROM,
+      from: RESEND_LEAD_FROM || RESEND_FROM,
       to: [replyTo],
       subject: `${s.subjectLead}: ${projectTitle}`,
       html: leadHtml(projectTitle, contact, cs, s),
+      // Si el prospecto responde, que le llegue a la dueña.
+      reply_to: OWNER_EMAIL,
     });
     leadSent = lead.ok;
   }

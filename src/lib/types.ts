@@ -1,5 +1,8 @@
 export type Phase = "exploration" | "structuring" | "generation" | "done";
 
+/** Idioma en el que se realiza la encuesta/entrevista y sus entregables. */
+export type Lang = "es" | "en";
+
 /** Correo de la dueña del negocio que recibe los leads (propuesta + adjunto). */
 export const OWNER_EMAIL = "nathaliaaguillon@gmail.com";
 
@@ -30,6 +33,10 @@ export interface Session {
   id: string;
   title: string;
   phase: Phase;
+  /** Idioma en el que se tomó la encuesta. Fija el idioma de los entregables y
+   * correos, aunque luego se cambie el toggle global. Opcional por compatibilidad
+   * con sesiones creadas antes de este campo. */
+  lang?: Lang;
   contact: Contact | null;
   messages: Message[];
   finalPrompt: string | null;

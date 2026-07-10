@@ -174,7 +174,9 @@ export default function SessionPage({ params }: SessionPageProps) {
           contact: s.contact,
           commercialSummary: commercial,
           finalPrompt: s.finalPrompt ?? "",
-          lang,
+          // Idioma de la encuesta (no el toggle global): el correo al lead sale
+          // en el idioma en que se hizo la entrevista.
+          lang: s.lang ?? lang,
         }),
       });
       const emailData = await emailRes.json().catch(() => ({}));
@@ -192,7 +194,8 @@ export default function SessionPage({ params }: SessionPageProps) {
       const summaryRes = await fetch("/api/commercial-summary", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title, lang }),
+        // Propuesta en el idioma de la encuesta (estable ante cambios del toggle).
+        body: JSON.stringify({ finalPrompt: s.finalPrompt, title: s.title, lang: s.lang ?? lang }),
       });
       const summaryData = await summaryRes.json().catch(() => ({}));
       const commercial: CommercialSummaryType | undefined = summaryData?.summary;

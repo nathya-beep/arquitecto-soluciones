@@ -1,6 +1,6 @@
 "use client";
 
-import { Session } from "./types";
+import { Session, Lang } from "./types";
 
 const STORAGE_KEY = "arquitecto_sessions";
 
@@ -23,11 +23,12 @@ export function saveSession(session: Session): void {
   localStorage.setItem(STORAGE_KEY, JSON.stringify([session, ...sessions]));
 }
 
-export function createSession(title = "Nueva sesión"): Session {
+export function createSession(title = "Nueva sesión", lang: Lang = "es"): Session {
   const session: Session = {
     id: crypto.randomUUID(),
     title,
     phase: "exploration",
+    lang,
     contact: null,
     messages: [],
     finalPrompt: null,

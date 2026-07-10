@@ -10,8 +10,10 @@ técnico y genera un **Prompt Master** técnico + una **propuesta comercial**.
 - **Idiomas**: toggle **ES / EN** en la cabecera (interfaz, entrevista y correos).
 - **Email (Resend)**: al completar la entrevista se envía a la dueña la propuesta
   comercial en el cuerpo **+ el Prompt Master como adjunto `.md`** (el texto del
-  prompt NO va en el cuerpo). Opcionalmente se envía al lead una copia de la
-  propuesta (sin adjunto, sin nada técnico) — requiere dominio verificado.
+  prompt NO va en el cuerpo). **También se envía al lead** una copia de la propuesta
+  (sin adjunto, sin nada técnico), **en el mismo idioma en que se hizo la encuesta**
+  (ES/EN). Para que el correo al lead llegue a prospectos con cualquier dominio hace
+  falta verificar un dominio en Resend (ver abajo); si no, solo se entrega a la dueña.
 
 ## Paso 1: API key de Groq (GRATIS)
 
@@ -28,12 +30,15 @@ adjuntos y enviar al email del lead).
 2. Crea una API key en [resend.com/api-keys](https://resend.com/api-keys) (`re_...`).
 3. Con esto ya funciona el **correo a la dueña con el adjunto .md**. No hace falta dominio.
 
-### (Opcional) Enviar también al correo del lead
+### Entrega del correo al lead (verificar dominio)
 
-Para escribirle al prospecto a su propio email hace falta **verificar un dominio**
-en Resend ([resend.com/domains](https://resend.com/domains) → añadir registros DNS).
-Una vez verificado, define `RESEND_LEAD_FROM` (abajo). Sin esto, el correo al lead
-queda desactivado y solo se envía el correo a la dueña.
+El correo al lead **ya está activo**: se envía a la dirección que deja el prospecto,
+en el idioma de la encuesta. Pero para que Resend lo entregue a **cualquier** correo
+(no solo al de la dueña) hace falta **verificar un dominio** en Resend
+([resend.com/domains](https://resend.com/domains) → añadir registros DNS) y definir
+`RESEND_LEAD_FROM` (abajo). Sin dominio verificado, Resend en modo prueba solo entrega
+a la dirección dueña de la cuenta y el envío al lead fallará silenciosamente (la app
+no se rompe; el correo a la dueña sí llega).
 
 ## Paso 3: Variables de entorno
 
@@ -52,8 +57,9 @@ AI_QUALITY_MODE=balanced
 # Cámbialo solo si verificaste un dominio.
 # RESEND_FROM=Arquitecto de Soluciones <no-reply@tudominio.com>
 
-# Opcional. Activa el correo AL LEAD. Requiere dominio verificado en Resend.
-# Si está vacío, no se envía correo al lead.
+# Opcional pero recomendado. Remitente del correo AL LEAD con dominio verificado
+# en Resend, necesario para entregar a prospectos con cualquier correo. Si está
+# vacío, el correo al lead usa RESEND_FROM (solo llega a la dueña en modo prueba).
 # RESEND_LEAD_FROM=Propuestas <propuestas@tudominio.com>
 ```
 
