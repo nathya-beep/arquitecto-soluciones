@@ -11,6 +11,7 @@ import {
   SUMMARY_MARKER,
   PROMPT_MASTER_MARKER,
   stripMarkers,
+  extractPromptMaster,
   OWNER_EMAIL,
 } from "@/lib/types";
 import { getSession, saveSession } from "@/lib/storage";
@@ -258,9 +259,14 @@ export default function SessionPage({ params }: SessionPageProps) {
       }
 
       // Detectar fase con el contenido CRUDO (con marcadores); mostrar/guardar LIMPIO.
+      // El Prompt Master (fase "done") se limpia a fondo (sin ruido conversacional);
+      // el resto solo pierde los marcadores. El mensaje guardado y finalPrompt usan
+      // el MISMO valor para que la tarjeta siga ocultando ese mensaje del chat.
       const newPhase = detectPhase(data.content, optimistic.phase);
       const isFinalPrompt = newPhase === "done";
-      const cleanContent = stripMarkers(data.content);
+      const cleanContent = isFinalPrompt
+        ? extractPromptMaster(data.content)
+        : stripMarkers(data.content);
 
       const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: cleanContent, createdAt: new Date().toISOString() };
 
@@ -332,7 +338,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       const data = await res.json();
       if (!res.ok) { setError(data.error ?? t.errGeneric); return; }
 
-      const clean = stripMarkers(data.content);
+      const clean = extractPromptMaster(data.content);
       // Reemplazar el Prompt Master viejo en los mensajes (para que siga oculto del chat).
       const newMessages = session.messages.map(m =>
         m.role === "assistant" && m.content === session.finalPrompt ? { ...m, content: clean } : m

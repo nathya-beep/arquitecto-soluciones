@@ -86,6 +86,7 @@ Luego pregunta: "¿Esto captura bien lo que necesitas? ¿Hay algo incorrecto o q
 
 ## FASE 3: GENERACIÓN DEL PROMPT MASTER
 Solo después de confirmar Fase 2. La PRIMERA línea del mensaje debe ser exactamente: [[PROMPT_MASTER]]
+El mensaje es un ENTREGABLE (un documento), no un mensaje de chat: debe contener ÚNICAMENTE el marcador seguido del prompt técnico. NO incluyas saludo ni preámbulo ("Entiendo...", "Aquí tienes..."), NO repitas el resumen de la Fase 2, y NO cierres con preguntas al usuario ("¿Te parece...?"). Empieza directo en "Contexto del Proyecto".
 Luego genera un prompt técnico en Markdown, COMPLETO y detallado (no lo cortes; termina todas las secciones), con:
 - Contexto del Proyecto
 - Enfoque y Stack Recomendado: elige la tecnología MÁS ADECUADA para ESTE problema y justifícalo en 1-2 frases. NO asumas siempre una app web. Según el caso puede ser: una app web, un script o automatización (p. ej. Google Apps Script, Python), un bot de chat (WhatsApp/Telegram), una hoja de cálculo con fórmulas/macros, una app móvil, una herramienta no-code (Airtable, Zapier, n8n), etc. Si una app web encaja, un buen stack por defecto es Next.js + TypeScript + una base de datos gestionada + Tailwind, pero solo si aplica.
@@ -121,4 +122,32 @@ export function stripMarkers(content: string): string {
     .replaceAll(SUMMARY_MARKER, "")
     .replaceAll(PROMPT_MASTER_MARKER, "")
     .trim();
+}
+
+/**
+ * Extrae SOLO el Prompt Master entregable del mensaje del modelo, quitando el
+ * "ruido" conversacional que a veces añade: un preámbulo ("Entiendo, quieres…"),
+ * un bloque de resumen recolado y una pregunta de cierre dirigida al usuario
+ * ("¿Te parece buena dirección?"). El entregable es un documento, no un chat.
+ *
+ * Estrategia: el prompt técnico siempre empieza en la sección "Contexto del
+ * Proyecto" (o "Project Context" en inglés); todo lo anterior se descarta. Luego
+ * se recortan las preguntas conversacionales del final.
+ */
+export function extractPromptMaster(content: string): string {
+  let text = stripMarkers(content);
+
+  // Empezar en la primera sección real del entregable; descarta saludo y resumen.
+  const heading = /(Contexto del Proyecto|Project Context)/i.exec(text);
+  if (heading) {
+    const lineStart = text.lastIndexOf("\n", heading.index) + 1;
+    text = text.slice(lineStart);
+  }
+
+  // Quitar cierres conversacionales al final (preguntas al usuario, ES y EN).
+  text = text
+    .replace(/\s*(¿[^?]*\?\s*)+$/g, "")
+    .replace(/\s*((Does this|Is this|Would you|Let me know|Do you)\b[^?]*\?\s*)+$/gi, "");
+
+  return text.trim();
 }
