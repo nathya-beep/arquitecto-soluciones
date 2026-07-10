@@ -52,6 +52,11 @@ export function getGroqApiKey(): string {
   return (process.env.GROQ_API_KEY ?? "").replace(/﻿/g, "").trim();
 }
 
+/** Formato de respuesta de Groq (compatible con OpenAI). Usar json_object fuerza
+ * al modelo a devolver JSON válido — imprescindible para respuestas que luego
+ * parseamos (p. ej. la propuesta comercial). Requiere que el prompt mencione "JSON". */
+export type GroqResponseFormat = { type: "json_object" } | { type: "text" };
+
 interface CallGroqOptions {
   messages: GroqMessage[];
   maxTokens?: number;
@@ -60,6 +65,8 @@ interface CallGroqOptions {
   model?: string;
   /** Idioma de los mensajes de error hacia el usuario. */
   lang?: Lang;
+  /** Si se pasa, se envía a Groq como response_format (p. ej. { type: "json_object" }). */
+  responseFormat?: GroqResponseFormat;
   /**
    * Si la respuesta se corta por límite de tokens (finish_reason "length"),
    * pide continuaciones y las concatena. Úsalo para entregables largos como el
@@ -135,7 +142,8 @@ async function singleRequest(
   messages: GroqMessage[],
   maxTokens: number,
   temperature: number,
-  lang: Lang
+  lang: Lang,
+  responseFormat?: GroqResponseFormat
 ): Promise<GroqResult> {
   const e = ERR[lang];
   try {
@@ -146,7 +154,13 @@ async function singleRequest(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature }),
+        body: JSON.stringify({
+          model,
+          messages,
+          max_tokens: maxTokens,
+          temperature,
+          ...(responseFormat ? { response_format: responseFormat } : {}),
+        }),
       });
 
       if (response.ok) {
@@ -202,12 +216,13 @@ export async function callGroq({
   model = GROQ_MODEL,
   lang = "es",
   completeIfTruncated = false,
+  responseFormat,
 }: CallGroqOptions): Promise<GroqResult> {
   const e = ERR[lang];
   const apiKey = getGroqApiKey();
   if (!apiKey) return { ok: false, error: e.noKey, status: 503 };
 
-  const first = await singleRequest(apiKey, model, messages, maxTokens, temperature, lang);
+  const first = await singleRequest(apiKey, model, messages, maxTokens, temperature, lang, responseFormat);
   if (!first.ok) return first;
 
   let content = first.content ?? "";

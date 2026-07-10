@@ -10,6 +10,33 @@ const RequestSchema = z.object({
   lang: z.enum(["es", "en"]).optional(),
 });
 
+/** Valida que el JSON del modelo tenga la forma de una propuesta comercial usable. */
+const SummarySchema = z.object({
+  headline: z.string().min(1),
+  problem: z.string().min(1),
+  benefits: z.array(z.string().min(1)).min(1),
+  howItWorks: z.array(z.string().min(1)).min(1),
+  roiEstimate: z.string().min(1),
+  callToAction: z.string().min(1),
+});
+
+/** Extrae y valida la propuesta del texto del modelo. Devuelve null si no es usable
+ * (así el caller puede reintentar en vez de aceptar basura). Tolera ```json ... ```
+ * y prosa alrededor: se queda con el primer objeto { ... } balanceado. */
+function extractSummary(raw: string | undefined): CommercialSummary | null {
+  if (!raw) return null;
+  const stripped = raw.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  const candidate = start !== -1 && end > start ? stripped.slice(start, end + 1) : stripped;
+  try {
+    const parsed = SummarySchema.safeParse(JSON.parse(candidate));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 const ENGLISH_DIRECTIVE =
   "\n\nIMPORTANT: Write ALL field values in ENGLISH. Keep the JSON keys exactly as specified above (in English).";
 
@@ -82,35 +109,50 @@ export async function POST(request: NextRequest) {
 
   const isEn = parsed.data.lang === "en";
   const system = isEn ? COMMERCIAL_SYSTEM + ENGLISH_DIRECTIVE : COMMERCIAL_SYSTEM;
+  // En modo "max" usa el 70b (mejor copy comercial); en "balanced" el 8b para
+  // reservar el presupuesto diario del 70b al Prompt Master.
+  const model = getQualityMode() === "max" ? GROQ_MODEL : GROQ_MODEL_FAST;
 
-  const result = await callGroq({
+  const callParams = {
     messages: [
-      { role: "system", content: system },
+      { role: "system" as const, content: system },
       {
-        role: "user",
+        role: "user" as const,
         content: `Aquí está la especificación técnica del proyecto "${parsed.data.title}":\n\n${parsed.data.finalPrompt}`,
       },
     ],
     maxTokens: 1024,
     temperature: 0.5,
-    // En modo "max" usa el 70b (mejor copy comercial); en "balanced" el 8b para
-    // reservar el presupuesto diario del 70b al Prompt Master.
-    model: getQualityMode() === "max" ? GROQ_MODEL : GROQ_MODEL_FAST,
+    model,
     lang: parsed.data.lang,
-  });
+    // Fuerza JSON válido: sin esto el 8b devuelve prosa alrededor del objeto y el
+    // parseo fallaba, cayendo al genérico. Groq exige que el prompt mencione "JSON".
+    responseFormat: { type: "json_object" as const },
+  };
 
-  if (!result.ok) {
-    return NextResponse.json({ error: result.error }, { status: result.status });
+  // Reintento: si el primer intento no produce un JSON usable, probamos una vez
+  // más antes de rendirnos. Así la propuesta casi nunca cae al genérico.
+  let summary: CommercialSummary | null = null;
+  let lastError: { error?: string; status?: number } | null = null;
+  for (let attempt = 0; attempt < 2 && !summary; attempt++) {
+    const result = await callGroq(callParams);
+    if (!result.ok) {
+      lastError = { error: result.error, status: result.status };
+      continue;
+    }
+    summary = extractSummary(result.content);
   }
 
-  let summary: CommercialSummary;
-  try {
-    const clean = (result.content ?? "{}")
-      .replace(/```json\n?/g, "")
-      .replace(/```\n?/g, "")
-      .trim();
-    summary = JSON.parse(clean);
-  } catch {
+  // Si Groq falló (p. ej. 429/daily limit) en ambos intentos y nunca hubo texto
+  // usable, propagamos el error para que el cliente muestre "reintentar".
+  if (!summary && lastError) {
+    return NextResponse.json({ error: lastError.error }, { status: lastError.status ?? 502 });
+  }
+
+  // Último recurso: Groq respondió pero el JSON nunca fue válido. Usamos el
+  // genérico para no romper el flujo, pero lo dejamos registrado.
+  if (!summary) {
+    console.error("commercial-summary: JSON inválido tras reintento, usando fallback genérico.");
     summary = isEn ? FALLBACK_SUMMARY_EN : FALLBACK_SUMMARY_ES;
   }
 
