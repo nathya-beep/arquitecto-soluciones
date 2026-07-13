@@ -1,8 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { SYSTEM_PROMPT } from "@/lib/types";
-import { callGroq, GROQ_MODEL, GROQ_MODEL_FAST, getQualityMode, QualityMode } from "@/lib/groq";
+import { SYSTEM_PROMPT, SUMMARY_MARKER } from "@/lib/types";
+import { callGroqStream, GROQ_MODEL, GROQ_MODEL_FAST, getQualityMode, QualityMode, GroqMessage } from "@/lib/groq";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
+
+export const maxDuration = 60;
 
 const RequestSchema = z.object({
   messages: z.array(
@@ -18,6 +20,8 @@ const RequestSchema = z.object({
   // Idioma de la entrevista (opcional). "en" hace que la IA trabaje en inglés.
   lang: z.enum(["es", "en"]).optional(),
 });
+
+type ChatMessage = z.infer<typeof RequestSchema>["messages"][number];
 
 /** Directiva de idioma que se añade al system prompt cuando se pide inglés. */
 const ENGLISH_DIRECTIVE = `
@@ -63,6 +67,62 @@ function modelForPhase(phase: string | undefined, mode: QualityMode): string {
   return phase === "exploration" ? GROQ_MODEL_FAST : GROQ_MODEL;
 }
 
+const HISTORY_BUDGET_CHARS = 6000 * 4;
+const OMITTED_BRIDGE: ChatMessage = {
+  role: "assistant",
+  content: "[…mensajes anteriores omitidos…]",
+};
+
+function messageCost(m: ChatMessage): number {
+  return m.content.length + m.role.length + 8;
+}
+
+/**
+ * Recorta historial del lado servidor para evitar payloads O(n²). Conserva
+ * siempre el arranque de la entrevista y el resumen comprimido si existe.
+ */
+export function trimHistory(messages: ChatMessage[], budgetChars = HISTORY_BUDGET_CHARS): ChatMessage[] {
+  const total = messages.reduce((sum, m) => sum + messageCost(m), 0);
+  if (total <= budgetChars) return messages;
+
+  const keep = new Set<number>();
+  for (let i = 0; i < Math.min(2, messages.length); i++) keep.add(i);
+
+  const summaryIndex = messages.findIndex((m) => m.content.includes(SUMMARY_MARKER));
+  if (summaryIndex >= 0) keep.add(summaryIndex);
+
+  const bridgeCost = messageCost(OMITTED_BRIDGE);
+  let used = [...keep].reduce((sum, i) => sum + messageCost(messages[i]), bridgeCost);
+
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (keep.has(i)) continue;
+    const cost = messageCost(messages[i]);
+    if (used + cost > budgetChars) continue;
+    keep.add(i);
+    used += cost;
+  }
+
+  const sorted = [...keep].sort((a, b) => a - b);
+  const result: ChatMessage[] = [];
+  let insertedBridge = false;
+  let previous = -1;
+
+  for (const index of sorted) {
+    if (!insertedBridge && previous >= 0 && index > previous + 1) {
+      result.push(OMITTED_BRIDGE);
+      insertedBridge = true;
+    }
+    result.push(messages[index]);
+    previous = index;
+  }
+
+  if (!insertedBridge && sorted.length > 0 && sorted[0] > 0) {
+    result.unshift(OMITTED_BRIDGE);
+  }
+
+  return result;
+}
+
 export async function POST(request: NextRequest) {
   // Rate limiting por IP para no exponer el presupuesto de Groq a abuso.
   const limited = rateLimit(`chat:${clientIp(request)}`, 40, 60_000);
@@ -83,11 +143,11 @@ export async function POST(request: NextRequest) {
   }
 
   const mode = getQualityMode();
-  const result = await callGroq({
+  const result = await callGroqStream({
     messages: [
       { role: "system", content: systemPromptFor(parsed.data.lang) },
-      ...parsed.data.messages,
-    ],
+      ...trimHistory(parsed.data.messages),
+    ] satisfies GroqMessage[],
     maxTokens: maxTokensForPhase(parsed.data.phase),
     temperature: 0.7,
     model: modelForPhase(parsed.data.phase, mode),
@@ -96,10 +156,15 @@ export async function POST(request: NextRequest) {
     completeIfTruncated: true,
   });
 
-  if (!result.ok) {
+  if (!result.ok || !result.stream) {
     return NextResponse.json({ error: result.error }, { status: result.status });
   }
 
-  const content = result.content || "Lo siento, no pude generar una respuesta.";
-  return NextResponse.json({ content });
+  return new Response(result.stream, {
+    headers: {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-cache, no-transform",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
 }

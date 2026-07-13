@@ -47,6 +47,14 @@ export interface GroqResult {
   truncated?: boolean;
 }
 
+export interface GroqStreamResult {
+  ok: boolean;
+  // Bytes (no strings): el contrato Fetch de Response exige chunks Uint8Array.
+  stream?: ReadableStream<Uint8Array>;
+  error?: string;
+  status?: number;
+}
+
 /** Lee la API key limpiando BOM y espacios que a veces se cuelan al pegarla. */
 export function getGroqApiKey(): string {
   return (process.env.GROQ_API_KEY ?? "").replace(/﻿/g, "").trim();
@@ -135,6 +143,24 @@ function rateLimitMessage(waitMs: number | null, lang: Lang): string {
 // error para que el cliente reintente.
 const MAX_RETRY_WAIT_MS = 4000;
 
+function requestBody(
+  model: string,
+  messages: GroqMessage[],
+  maxTokens: number,
+  temperature: number,
+  stream = false,
+  responseFormat?: GroqResponseFormat
+): string {
+  return JSON.stringify({
+    model,
+    messages,
+    max_tokens: maxTokens,
+    temperature,
+    stream,
+    ...(responseFormat ? { response_format: responseFormat } : {}),
+  });
+}
+
 /** Una sola petición a Groq, con reintento transparente ante un 429 corto. */
 async function singleRequest(
   apiKey: string,
@@ -154,13 +180,7 @@ async function singleRequest(
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          model,
-          messages,
-          max_tokens: maxTokens,
-          temperature,
-          ...(responseFormat ? { response_format: responseFormat } : {}),
-        }),
+        body: requestBody(model, messages, maxTokens, temperature, false, responseFormat),
       });
 
       if (response.ok) {
@@ -201,6 +221,225 @@ async function singleRequest(
     console.error("Groq fetch error:", err);
     return { ok: false, error: e.connError, status: 502 };
   }
+}
+
+export interface SseParseResult {
+  deltas: string[];
+  finishReason?: string;
+  done: boolean;
+}
+
+/** Parser puro de SSE de Groq, robusto ante chunks partidos en cualquier límite. */
+export function parseGroqSseChunks(chunks: string[]): SseParseResult {
+  let buffer = "";
+  const deltas: string[] = [];
+  let finishReason: string | undefined;
+  let done = false;
+
+  const consumeEvent = (raw: string) => {
+    const data = raw
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+
+    if (!data) return;
+    if (data === "[DONE]") {
+      done = true;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(data);
+      const choice = parsed?.choices?.[0];
+      const delta = choice?.delta?.content;
+      if (typeof delta === "string") deltas.push(delta);
+      if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
+    } catch {
+      // Groq envía JSON por evento; si llega algo inválido lo ignoramos para no
+      // romper el stream del usuario por un frame defectuoso.
+    }
+  };
+
+  for (const chunk of chunks) {
+    buffer += chunk;
+    const parts = buffer.split(/\r?\n\r?\n/);
+    buffer = parts.pop() ?? "";
+    for (const part of parts) consumeEvent(part);
+  }
+
+  if (buffer.trim()) consumeEvent(buffer);
+
+  return { deltas, finishReason, done };
+}
+
+function createGroqSseParser(onDelta: (delta: string) => void) {
+  let buffer = "";
+  let finishReason: string | undefined;
+  let done = false;
+
+  const feed = (chunk: string) => {
+    buffer += chunk;
+    const parts = buffer.split(/\r?\n\r?\n/);
+    buffer = parts.pop() ?? "";
+
+    for (const part of parts) {
+      const result = parseGroqSseChunks([part]);
+      for (const delta of result.deltas) onDelta(delta);
+      if (result.finishReason) finishReason = result.finishReason;
+      if (result.done) done = true;
+    }
+  };
+
+  const flush = () => {
+    if (!buffer.trim()) return;
+    const result = parseGroqSseChunks([buffer]);
+    for (const delta of result.deltas) onDelta(delta);
+    if (result.finishReason) finishReason = result.finishReason;
+    if (result.done) done = true;
+    buffer = "";
+  };
+
+  return {
+    feed,
+    flush,
+    get finishReason() {
+      return finishReason;
+    },
+    get done() {
+      return done;
+    },
+  };
+}
+
+async function startStreamRequest(
+  apiKey: string,
+  model: string,
+  messages: GroqMessage[],
+  maxTokens: number,
+  temperature: number,
+  lang: Lang
+): Promise<{ ok: true; response: Response } | { ok: false; error: string; status: number }> {
+  const e = ERR[lang];
+
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const response = await fetch(GROQ_ENDPOINT, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: requestBody(model, messages, maxTokens, temperature, true),
+      });
+
+      if (response.ok && response.body) return { ok: true, response };
+
+      const errText = await response.text().catch(() => "");
+      console.error("Groq stream error:", response.status, errText);
+
+      if (response.status === 401) return { ok: false, error: e.invalidKey, status: 502 };
+
+      if (response.status === 429) {
+        const bodyWaitMs = parseResetMs(errText.match(/try again in ([\dhms.]+)/i)?.[1] ?? null);
+        const headerWaitMs =
+          parseResetMs(response.headers.get("x-ratelimit-reset-tokens")) ??
+          parseResetMs(response.headers.get("retry-after"));
+        const waitMs = bodyWaitMs ?? headerWaitMs;
+
+        if (attempt === 0 && waitMs !== null && waitMs <= MAX_RETRY_WAIT_MS) {
+          await sleep(waitMs + 250);
+          continue;
+        }
+        return { ok: false, error: rateLimitMessage(waitMs, lang), status: 429 };
+      }
+
+      return { ok: false, error: e.aiError, status: 502 };
+    }
+
+    return { ok: false, error: rateLimitMessage(null, lang), status: 429 };
+  } catch (err) {
+    console.error("Groq stream fetch error:", err);
+    return { ok: false, error: e.connError, status: 502 };
+  }
+}
+
+/**
+ * Llama a Groq en modo streaming. Si la primera petición falla con 429/401 antes
+ * de emitir, devuelve error para que la route responda JSON como antes. Si falla
+ * después de empezar, cierra el stream con lo acumulado.
+ */
+export async function callGroqStream({
+  messages,
+  maxTokens = 4096,
+  temperature = 0.7,
+  model = GROQ_MODEL,
+  lang = "es",
+  completeIfTruncated = false,
+}: CallGroqOptions): Promise<GroqStreamResult> {
+  const e = ERR[lang];
+  const apiKey = getGroqApiKey();
+  if (!apiKey) return { ok: false, error: e.noKey, status: 503 };
+
+  const first = await startStreamRequest(apiKey, model, messages, maxTokens, temperature, lang);
+  if (!first.ok) return first;
+
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const decoder = new TextDecoder();
+      const encoder = new TextEncoder();
+      const convo = [...messages];
+      let response: Response | null = first.response;
+      let continuations = 0;
+      let lastChunk = "";
+
+      try {
+        while (response?.body) {
+          const parser = createGroqSseParser((delta) => {
+            lastChunk += delta;
+            controller.enqueue(encoder.encode(delta));
+          });
+          const reader = response.body.getReader();
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            parser.feed(decoder.decode(value, { stream: true }));
+          }
+
+          parser.feed(decoder.decode());
+          parser.flush();
+
+          const shouldContinue =
+            completeIfTruncated &&
+            parser.finishReason === "length" &&
+            continuations < MAX_CONTINUATIONS;
+
+          if (!shouldContinue) break;
+
+          convo.push({ role: "assistant", content: lastChunk });
+          convo.push({
+            role: "user",
+            content:
+              "Continue the previous message EXACTLY from where you stopped. Do not repeat anything already written, do not add a preamble, just keep going.",
+          });
+
+          const next = await startStreamRequest(apiKey, model, convo, maxTokens, temperature, lang);
+          if (!next.ok) break; // El usuario conserva lo ya emitido.
+          response = next.response;
+          lastChunk = "";
+          continuations++;
+        }
+      } catch (err) {
+        console.error("Groq stream read error:", err);
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return { ok: true, stream };
 }
 
 /**

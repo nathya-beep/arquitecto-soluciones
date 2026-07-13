@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { stripMarkers, extractPromptMaster, SUMMARY_MARKER, PROMPT_MASTER_MARKER } from "../types";
 import { getDict, phaseLabel } from "../i18n";
-import { parseResetMs } from "../groq";
+import { parseResetMs, parseGroqSseChunks, callGroqStream } from "../groq";
 import { rateLimit } from "../rateLimit";
+import { trimHistory } from "../../app/api/chat/route";
 
 describe("stripMarkers", () => {
   it("quita los marcadores internos y recorta", () => {
@@ -79,6 +80,33 @@ describe("parseResetMs", () => {
   });
 });
 
+describe("parseGroqSseChunks", () => {
+  it("parsea deltas con chunks partidos en límites arbitrarios", () => {
+    const sse = [
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Ho" }, finish_reason: null }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "la" }, finish_reason: null }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+      "data: [DONE]\n\n",
+    ].join("");
+
+    const chunks = [sse.slice(0, 7), sse.slice(7, 31), sse.slice(31, 58), sse.slice(58, 101), sse.slice(101)];
+    const parsed = parseGroqSseChunks(chunks);
+
+    expect(parsed.deltas.join("")).toBe("Hola");
+    expect(parsed.finishReason).toBe("stop");
+    expect(parsed.done).toBe(true);
+  });
+
+  it("detecta finish_reason length para continuaciones", () => {
+    const sse = `data: ${JSON.stringify({ choices: [{ delta: { content: "corte" }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "length" }] })}\n\n`;
+
+    const parsed = parseGroqSseChunks([sse.slice(0, 13), sse.slice(13)]);
+    expect(parsed.deltas).toEqual(["corte"]);
+    expect(parsed.finishReason).toBe("length");
+  });
+});
+
 describe("rateLimit", () => {
   it("permite hasta el límite y luego bloquea", () => {
     const key = `test-${Math.round(performance.now())}-${Math.random()}`;
@@ -89,5 +117,73 @@ describe("rateLimit", () => {
     expect(r2.ok).toBe(true);
     expect(r3.ok).toBe(false);
     expect(r3.retryAfterMs).toBeGreaterThan(0);
+  });
+});
+
+describe("callGroqStream", () => {
+  it("devuelve un stream de BYTES consumible como cuerpo de Response", async () => {
+    // Contrato Fetch: los chunks del body deben ser Uint8Array; si se encolan
+    // strings, Response.text() revienta en el runtime Node (undici).
+    const sse =
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "Ho" }, finish_reason: null }] })}\n\n` +
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "la" }, finish_reason: "stop" }] })}\n\n` +
+      "data: [DONE]\n\n";
+
+    const upstream = () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(sse));
+            controller.close();
+          },
+        }),
+        { status: 200 }
+      );
+
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.GROQ_API_KEY;
+    globalThis.fetch = (async () => upstream()) as typeof fetch;
+    process.env.GROQ_API_KEY = "gsk_test_key";
+
+    try {
+      const result = await callGroqStream({ messages: [{ role: "user", content: "hola" }] });
+      expect(result.ok).toBe(true);
+      const text = await new Response(result.stream).text();
+      expect(text).toBe("Hola");
+    } finally {
+      globalThis.fetch = originalFetch;
+      process.env.GROQ_API_KEY = originalKey;
+    }
+  });
+});
+
+describe("trimHistory", () => {
+  it("conserva los primeros mensajes y el [[RESUMEN]] respetando presupuesto", () => {
+    const messages = [
+      { role: "user" as const, content: "primer mensaje importante" },
+      { role: "assistant" as const, content: "primera respuesta importante" },
+      { role: "user" as const, content: "x".repeat(300) },
+      { role: "assistant" as const, content: `${SUMMARY_MARKER}\nResumen compacto` },
+      { role: "user" as const, content: "y".repeat(300) },
+      { role: "assistant" as const, content: "última respuesta" },
+    ];
+
+    const trimmed = trimHistory(messages, 220);
+    const total = trimmed.reduce((sum, m) => sum + m.content.length + m.role.length + 8, 0);
+
+    expect(trimmed[0]).toBe(messages[0]);
+    expect(trimmed[1]).toBe(messages[1]);
+    expect(trimmed.some((m) => m.content.includes(SUMMARY_MARKER))).toBe(true);
+    expect(trimmed.some((m) => m.content === "[…mensajes anteriores omitidos…]")).toBe(true);
+    expect(total).toBeLessThanOrEqual(220);
+  });
+
+  it("devuelve el historial intacto cuando cabe en el presupuesto", () => {
+    const messages = [
+      { role: "user" as const, content: "hola" },
+      { role: "assistant" as const, content: "respuesta" },
+    ];
+
+    expect(trimHistory(messages, 1000)).toBe(messages);
   });
 });

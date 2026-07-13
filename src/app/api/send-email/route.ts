@@ -3,6 +3,8 @@ import { z } from "zod";
 import { CommercialSummary, OWNER_EMAIL } from "@/lib/types";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
 
+export const maxDuration = 30;
+
 // Límites de tamaño para evitar payloads abusivos hacia el envío de correo.
 const RequestSchema = z.object({
   projectTitle: z.string().max(300),

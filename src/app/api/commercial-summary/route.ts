@@ -4,6 +4,8 @@ import { CommercialSummary } from "@/lib/types";
 import { callGroq, GROQ_MODEL, GROQ_MODEL_FAST, getQualityMode } from "@/lib/groq";
 import { rateLimit, clientIp } from "@/lib/rateLimit";
 
+export const maxDuration = 30;
+
 const RequestSchema = z.object({
   finalPrompt: z.string().min(1),
   title: z.string(),

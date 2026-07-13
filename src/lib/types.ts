@@ -40,6 +40,7 @@ export interface Session {
   contact: Contact | null;
   messages: Message[];
   finalPrompt: string | null;
+  finalPromptMessageId?: string | null;
   commercialSummary: CommercialSummary | null;
   emailSent: boolean;
   createdAt: string;

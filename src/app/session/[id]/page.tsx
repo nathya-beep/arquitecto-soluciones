@@ -75,6 +75,13 @@ function detectPhase(content: string, currentPhase: Phase): Phase {
   return currentPhase;
 }
 
+const INITIAL_STREAM_BUFFER = 30;
+
+function visibleFromRaw(raw: string): string {
+  if (raw.length < INITIAL_STREAM_BUFFER) return "";
+  return stripMarkers(raw);
+}
+
 export default function SessionPage({ params }: SessionPageProps) {
   const { id } = use(params);
   const router = useRouter();
@@ -85,6 +92,7 @@ export default function SessionPage({ params }: SessionPageProps) {
   const [session, setSession] = useState<Session | null>(null);
   const [inputValue, setInputValue] = useState("");
   const [sending, setSending] = useState(false);
+  const [waitingForFirstChunk, setWaitingForFirstChunk] = useState(false);
   const [error, setError] = useState("");
   const [initialized, setInitialized] = useState(false);
   const [generatingCommercial, setGeneratingCommercial] = useState(false);
@@ -141,26 +149,84 @@ export default function SessionPage({ params }: SessionPageProps) {
     setSession(updated);
   };
 
+  async function readStream(res: Response, onChunk: (raw: string) => void): Promise<string> {
+    if (!res.body) throw new Error("empty_stream");
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let raw = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+      onChunk(raw);
+    }
+
+    raw += decoder.decode();
+    onChunk(raw);
+    return raw;
+  }
+
   const sendGreeting = async (s: Session) => {
     setSending(true);
+    setWaitingForFirstChunk(true);
     const greetingMsg: Message = {
       id: crypto.randomUUID(),
       role: "user",
       content: GREETINGS[lang],
       createdAt: new Date().toISOString(),
     };
+    const assistantMsg: Message = {
+      id: crypto.randomUUID(),
+      role: "assistant",
+      content: "",
+      createdAt: new Date().toISOString(),
+    };
+    setSession({ ...s, messages: [greetingMsg, assistantMsg], updatedAt: new Date().toISOString() });
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: [{ role: "user", content: greetingMsg.content }], phase: "exploration", lang }),
       });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error ?? t.errAI); setInitialized(true); return; }
-      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: stripMarkers(data.content), createdAt: new Date().toISOString() };
-      updateSession({ ...s, messages: [greetingMsg, assistantMsg], updatedAt: new Date().toISOString() });
-    } catch { setError(t.errConnection); }
-    finally { setSending(false); setInitialized(true); }
+
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? t.errAI);
+        setSession(s);
+        setInitialized(true);
+        return;
+      }
+
+      const raw = await readStream(res, (currentRaw) => {
+        setWaitingForFirstChunk(false);
+        setSession((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            messages: current.messages.map((m) =>
+              m.id === assistantMsg.id ? { ...m, content: visibleFromRaw(currentRaw) } : m
+            ),
+          };
+        });
+      });
+
+      const cleanContent = stripMarkers(raw);
+      updateSession({
+        ...s,
+        messages: [{ ...greetingMsg }, { ...assistantMsg, content: cleanContent }],
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      setError(t.errConnection);
+      setSession(s);
+    } finally {
+      setSending(false);
+      setWaitingForFirstChunk(false);
+      setInitialized(true);
+    }
   };
 
   /** Envía la propuesta (dueña con adjunto + lead) por Resend. Devuelve si llegó a la dueña. */
@@ -242,48 +308,68 @@ export default function SessionPage({ params }: SessionPageProps) {
     if (!session || sending || session.phase === "done") return;
 
     const userMsg: Message = { id: crypto.randomUUID(), role: "user", content: userContent, createdAt: new Date().toISOString() };
-    const optimistic: Session = { ...session, messages: [...session.messages, userMsg], updatedAt: new Date().toISOString() };
-    updateSession(optimistic);
+    const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: "", createdAt: new Date().toISOString() };
+    const optimistic: Session = {
+      ...session,
+      messages: [...session.messages, userMsg, assistantMsg],
+      updatedAt: new Date().toISOString(),
+    };
+    setSession(optimistic);
     setSending(true);
+    setWaitingForFirstChunk(true);
     setError("");
 
     try {
+      const requestMessages = [...session.messages, userMsg].map(m => ({ role: m.role, content: m.content }));
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: optimistic.messages.map(m => ({ role: m.role, content: m.content })), phase: optimistic.phase, lang }),
+        body: JSON.stringify({ messages: requestMessages, phase: session.phase, lang }),
       });
-      const data = await res.json();
+
       if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
         setError(data.error ?? t.errGeneric);
         if (restoreInputOnError) setInputValue(userContent);
         updateSession(session);
         return;
       }
 
+      const raw = await readStream(res, (currentRaw) => {
+        setWaitingForFirstChunk(false);
+        setSession((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            messages: current.messages.map((m) =>
+              m.id === assistantMsg.id ? { ...m, content: visibleFromRaw(currentRaw) } : m
+            ),
+          };
+        });
+      });
+
       // Detectar fase con el contenido CRUDO (con marcadores); mostrar/guardar LIMPIO.
       // El Prompt Master (fase "done") se limpia a fondo (sin ruido conversacional);
       // el resto solo pierde los marcadores. El mensaje guardado y finalPrompt usan
       // el MISMO valor para que la tarjeta siga ocultando ese mensaje del chat.
-      const newPhase = detectPhase(data.content, optimistic.phase);
+      const newPhase = detectPhase(raw, session.phase);
       const isFinalPrompt = newPhase === "done";
       const cleanContent = isFinalPrompt
-        ? extractPromptMaster(data.content)
-        : stripMarkers(data.content);
+        ? extractPromptMaster(raw)
+        : stripMarkers(raw);
 
-      const assistantMsg: Message = { id: crypto.randomUUID(), role: "assistant", content: cleanContent, createdAt: new Date().toISOString() };
-
-      let title = optimistic.title;
+      let title = session.title;
       if (DEFAULT_TITLES.includes(title) && session.messages.length <= 2) {
         title = userContent.split(" ").slice(0, 7).join(" ");
       }
 
       updateSession({
-        ...optimistic,
+        ...session,
         title,
         phase: newPhase,
-        messages: [...optimistic.messages, assistantMsg],
-        finalPrompt: isFinalPrompt ? cleanContent : optimistic.finalPrompt,
+        messages: [...session.messages, userMsg, { ...assistantMsg, content: cleanContent }],
+        finalPrompt: isFinalPrompt ? cleanContent : session.finalPrompt,
+        finalPromptMessageId: isFinalPrompt ? assistantMsg.id : session.finalPromptMessageId,
         updatedAt: new Date().toISOString(),
       });
     } catch {
@@ -292,6 +378,7 @@ export default function SessionPage({ params }: SessionPageProps) {
       updateSession(session);
     } finally {
       setSending(false);
+      setWaitingForFirstChunk(false);
     }
   };
 
@@ -323,7 +410,14 @@ export default function SessionPage({ params }: SessionPageProps) {
   const regeneratePromptMaster = async () => {
     if (!session || regenerating || !session.finalPrompt) return;
     setRegenerating(true);
+    setSending(true);
+    setWaitingForFirstChunk(true);
     setError("");
+
+    const targetId =
+      session.finalPromptMessageId ??
+      session.messages.find((m) => m.role === "assistant" && m.content === session.finalPrompt)?.id;
+
     try {
       const directive =
         lang === "en"
@@ -331,27 +425,57 @@ export default function SessionPage({ params }: SessionPageProps) {
           : "Regenera el Prompt Master desde cero, más completo y detallado, cubriendo todas las secciones a fondo. La primera línea debe ser exactamente [[PROMPT_MASTER]].";
       const msgs = [
         ...session.messages.map(m => ({ role: m.role, content: m.content })),
-        { role: "user", content: directive },
+        { role: "user" as const, content: directive },
       ];
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: msgs, phase: "generation", lang }),
       });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error ?? t.errGeneric); return; }
 
-      const clean = extractPromptMaster(data.content);
-      // Reemplazar el Prompt Master viejo en los mensajes (para que siga oculto del chat).
-      const newMessages = session.messages.map(m =>
-        m.role === "assistant" && m.content === session.finalPrompt ? { ...m, content: clean } : m
-      );
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.error ?? t.errGeneric);
+        return;
+      }
+
+      const fallbackId = targetId ?? crypto.randomUUID();
+      if (!targetId) {
+        setSession({
+          ...session,
+          messages: [
+            ...session.messages,
+            { id: fallbackId, role: "assistant", content: "", createdAt: new Date().toISOString() },
+          ],
+        });
+      }
+
+      const raw = await readStream(res, (currentRaw) => {
+        setWaitingForFirstChunk(false);
+        setSession((current) => {
+          if (!current) return current;
+          return {
+            ...current,
+            messages: current.messages.map((m) =>
+              m.id === fallbackId ? { ...m, content: visibleFromRaw(currentRaw) } : m
+            ),
+          };
+        });
+      });
+
+      // Limpieza a fondo del entregable regenerado (sin ruido conversacional).
+      const clean = extractPromptMaster(raw);
+      const existing = targetId
+        ? session.messages.map(m => m.id === targetId ? { ...m, content: clean } : m)
+        : [...session.messages, { id: fallbackId, role: "assistant" as const, content: clean, createdAt: new Date().toISOString() }];
+
       commercialStartedRef.current = false; // que el efecto regenere la propuesta
       setCommercialError(false);
       updateSession({
         ...session,
-        messages: newMessages,
+        messages: existing,
         finalPrompt: clean,
+        finalPromptMessageId: fallbackId,
         commercialSummary: null,
         emailSent: false,
         updatedAt: new Date().toISOString(),
@@ -360,6 +484,8 @@ export default function SessionPage({ params }: SessionPageProps) {
       setError(t.errConnectionRetry);
     } finally {
       setRegenerating(false);
+      setSending(false);
+      setWaitingForFirstChunk(false);
     }
   };
 
@@ -393,7 +519,11 @@ export default function SessionPage({ params }: SessionPageProps) {
     m =>
       !(m.role === "user" && ALL_GREETINGS.includes(m.content)) &&
       // Ocultamos el mensaje del Prompt Master del chat: se muestra en su tarjeta.
-      !(m.role === "assistant" && session.phase === "done" && m.content === session.finalPrompt)
+      !(m.role === "assistant" && session.phase === "done" && (
+        session.finalPromptMessageId
+          ? m.id === session.finalPromptMessageId
+          : m.content === session.finalPrompt
+      ))
   );
 
   return (
@@ -423,7 +553,7 @@ export default function SessionPage({ params }: SessionPageProps) {
             <ChatMessage key={message.id} message={message} />
           ))}
 
-          {sending && (
+          {waitingForFirstChunk && (
             <div className="flex justify-start mb-4">
               <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center mr-2 flex-shrink-0 mt-1">
                 <svg className="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">

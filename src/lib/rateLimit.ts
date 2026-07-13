@@ -14,7 +14,7 @@ const buckets = new Map<string, Bucket>();
 
 // Limpieza perezosa para que el Map no crezca sin fin.
 function sweep(now: number) {
-  if (buckets.size < 5000) return;
+  if (buckets.size <= 500) return;
   for (const [key, b] of buckets) {
     if (b.resetAt <= now) buckets.delete(key);
   }
