@@ -7,8 +7,9 @@ import { rateLimit, clientIp } from "@/lib/rateLimit";
 export const maxDuration = 30;
 
 const RequestSchema = z.object({
-  finalPrompt: z.string().min(1),
-  title: z.string(),
+  // Tope de tamaño alineado con el endpoint de envío de correo.
+  finalPrompt: z.string().min(1).max(60_000),
+  title: z.string().max(300),
   lang: z.enum(["es", "en"]).optional(),
 });
 

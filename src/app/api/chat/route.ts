@@ -7,12 +7,16 @@ import { rateLimit, clientIp } from "@/lib/rateLimit";
 export const maxDuration = 60;
 
 const RequestSchema = z.object({
-  messages: z.array(
-    z.object({
-      role: z.enum(["user", "assistant"]),
-      content: z.string(),
-    })
-  ),
+  // Límites de tamaño para evitar payloads abusivos que quemen el presupuesto
+  // de Groq (una entrevista real cabe de sobra dentro de estos topes).
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(["user", "assistant"]),
+        content: z.string().max(12_000),
+      })
+    )
+    .max(200),
   // Fase actual de la sesión (opcional). Se usa solo para dimensionar
   // max_tokens y no gastar el presupuesto de Groq (12k tokens/min) en turnos
   // de entrevista que son cortos.

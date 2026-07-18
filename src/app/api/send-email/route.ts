@@ -5,6 +5,10 @@ import { rateLimit, clientIp } from "@/lib/rateLimit";
 
 export const maxDuration = 30;
 
+// Destinatario de los leads. Configurable por entorno; si no se define, usa el
+// correo de la dueña por defecto (para no romper despliegues existentes).
+const OWNER_TO = (process.env.OWNER_EMAIL ?? "").trim() || OWNER_EMAIL;
+
 // Límites de tamaño para evitar payloads abusivos hacia el envío de correo.
 const RequestSchema = z.object({
   projectTitle: z.string().max(300),
@@ -198,10 +202,20 @@ export async function POST(request: NextRequest) {
   }
 
   // Solo aceptamos peticiones del propio sitio (bloquea curl/relay ingenuo).
+  // Comparamos el HOST exacto del Origin contra el Host de la petición. Usar
+  // endsWith permitía bypass por sufijo (p. ej. "https://evil-miapp.com").
   const origin = request.headers.get("origin");
   const host = request.headers.get("host");
-  if (origin && host && !origin.endsWith(host)) {
-    return NextResponse.json({ ok: false, error: "Origen no permitido." }, { status: 403 });
+  if (origin && host) {
+    let originHost: string | null = null;
+    try {
+      originHost = new URL(origin).host;
+    } catch {
+      originHost = null;
+    }
+    if (originHost !== host) {
+      return NextResponse.json({ ok: false, error: "Origen no permitido." }, { status: 403 });
+    }
   }
 
   let body: unknown;
@@ -234,7 +248,7 @@ export async function POST(request: NextRequest) {
   // 1) Correo a la DUEÑA (propuesta + adjunto .md; sin texto del prompt en el cuerpo).
   const owner = await sendViaResend(apiKey, {
     from: RESEND_FROM,
-    to: [OWNER_EMAIL],
+    to: [OWNER_TO],
     subject: `${s.subjectOwner}${who}: ${projectTitle}`,
     html: ownerHtml(projectTitle, contact, cs, s),
     ...(replyTo ? { reply_to: replyTo } : {}),
@@ -255,7 +269,7 @@ export async function POST(request: NextRequest) {
       subject: `${s.subjectLead}: ${projectTitle}`,
       html: leadHtml(projectTitle, contact, cs, s),
       // Si el prospecto responde, que le llegue a la dueña.
-      reply_to: OWNER_EMAIL,
+      reply_to: OWNER_TO,
     });
     leadSent = lead.ok;
   }

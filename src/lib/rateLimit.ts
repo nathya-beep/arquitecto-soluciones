@@ -53,9 +53,22 @@ export function rateLimit(key: string, limit: number, windowMs: number): RateLim
   return { ok: true, remaining: limit - b.count, retryAfterMs: 0 };
 }
 
-/** IP del cliente a partir de las cabeceras de proxy (Vercel usa x-forwarded-for). */
+/**
+ * IP del cliente. IMPORTANTE: `x-forwarded-for` es una cabecera que el propio
+ * cliente puede enviar, y el PRIMER valor es controlable por él → tomarlo
+ * permitía saltarse el rate limit rotando la cabecera. En Vercel:
+ *  1) `request.ip` es la IP real que inyecta la plataforma (fuente fiable).
+ *  2) Si no está, el ÚLTIMO salto de `x-forwarded-for` lo añade la
+ *     infraestructura, no el cliente, así que es más fiable que el primero.
+ */
 export function clientIp(request: NextRequest): string {
+  const vercelIp = (request as unknown as { ip?: string }).ip;
+  if (vercelIp) return vercelIp;
+
   const fwd = request.headers.get("x-forwarded-for");
-  if (fwd) return fwd.split(",")[0].trim();
+  if (fwd) {
+    const parts = fwd.split(",").map((p) => p.trim()).filter(Boolean);
+    if (parts.length) return parts[parts.length - 1];
+  }
   return request.headers.get("x-real-ip") || "unknown";
 }
